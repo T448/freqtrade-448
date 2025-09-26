@@ -1,0 +1,115 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(gh auth:*)",
+            "WebFetch(domain:docs.anthropic.com)",
+            "Bash(gh repo view:*)",
+            "Bash(gh issue create:*)",
+            "Bash(gh issue view:*)",
+            "Bash(git checkout:*)",
+            "Bash(git pull:*)",
+            "Bash(uv venv:*)",
+            "Bash(git add:*)",
+            "Bash(git commit:*)",
+            "Bash(gh issue edit:*)",
+            "Bash(uv run pytest:*)",
+            "Bash(uv sync:*)",
+            "Bash(uv run ruff:*)",
+            "Bash(uv run:*)",
+            "Bash(git push:*)",
+            "Bash(gh pr create:*)",
+            "Bash(find:*)",
+            "Bash(gh run list:*)",
+            "Bash(touch:*)",
+            "Read(**)",
+            "Write(src/**)",
+            "Write(docs/**)",
+            "Write(.tmp/**)",
+            "Bash(git push origin:*::*)",
+            "Bash(git push:*)",
+            "Bash(git status:*)",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(rm :*)",
+            "Bash(ls:*)",
+            "Bash(cat :*:*)",
+            "Bash(ruff check:*)",
+            "Bash(ruff format:*)",
+            "Bash(mypy:*)",
+            "Bash(gh issue comment:*)",
+            "Bash(gh issue:*)",
+            "Bash(gh pr view:*)",
+            "Bash(gh pr list:*)",
+            "mcp__serena__onboarding",
+            "mcp__serena__write_memory",
+            "mcp__serena__activate_project",
+            "mcp__serena__think_about_task_adherence",
+            "mcp__sequential-thinking__sequentialthinking",
+            "mcp__serena__think_about_whether_you_are_done",
+            "mcp__serena__check_onboarding_performed",
+            "mcp__serena__read_memory",
+            "mcp__serena__insert_before_symbol",
+            "mcp__serena__replace_symbol_body",
+            "mcp__serena__replace_regex",
+            "mcp__serena__list_dir",
+            "mcp__serena__get_symbols_overview",
+            "mcp__serena__find_file",
+            "mcp__serena__find_symbol",
+            "mcp__serena__search_for_pattern",
+            "mcp__serena__think_about_collected_information"
+        ],
+        "deny": [
+            "Bash(sudo:*)",
+            "Bash(rm -rf:*)",
+            "Bash(git reset:*)",
+            "Bash(git rebase:*)",
+            "Read(.env*)",
+            "Read(.env.*)",
+            "Read(.env.dev)",
+            "Read(.env)",
+            "Read(id_rsa)",
+            "Read(id_ed25519)",
+            "Write(.env*)",
+            "Write(.env.*)",
+            "Write(.env)",
+            "Bash(curl:*)",
+            "Bash(wget:*)"
+        ]
+    },
+    "env": {
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_MICROCOMPACT": "1"
+    },
+    "enableAllProjectMcpServers": false,
+    "enabledMcpjsonServers": [
+        "serena",
+        "sequential-thinking",
+        "context7",
+        "vibe_kanban"
+    ],
+    "statusLine": {
+        "type": "command",
+        "command": "npx -y ccusage@latest statusline"
+    },
+    "hooks": {
+        "PostToolUse": [
+            {
+                "matcher": "Write|Edit|MultiEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "ruff format ."
+                    },
+                    {
+                        "type": "command",
+                        "command": "ruff check . --output-format=github || true"
+                    },
+                    {
+                        "type": "command",
+                        "command": "mypy . --config-file pyproject.toml --ignore-missing-imports --no-namespace-packages || true"
+                    }
+                ]
+            }
+        ]
+    }
+}

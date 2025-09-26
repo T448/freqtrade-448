@@ -9,7 +9,7 @@
     // Uncomment to connect as a non-root user if you've added one. See https://aka.ms/vscode-remote/containers/non-root.
     "remoteUser": "ftuser",
     "onCreateCommand": "pip install --user -e .",
-    "postCreateCommand": "freqtrade create-userdir --userdir user_data/",
+    "postCreateCommand": "bash .devcontainer/scripts/post-create.sh && freqtrade create-userdir --userdir user_data/",
     "workspaceFolder": "/workspaces/freqtrade",
     "customizations": {
         "vscode": {
@@ -38,7 +38,37 @@
                 "ms-azuretools.vscode-docker",
                 "vscode-icons-team.vscode-icons",
                 "github.vscode-github-actions",
-            ],
+                "dbaeumer.vscode-eslint",
+                "streetsidesoftware.code-spell-checker",
+                "njqdev.vscode-python-typehint",
+                "Gruntfuggly.todo-tree",
+                "oderwat.indent-rainbow",
+                "formulahendry.code-runner",
+                "KevinRose.vsc-python-indent",
+                "ms-python.mypy-type-checker",
+                "ms-toolsai.jupyter",
+                "njpwerner.autodocstring",
+                "ms-ceintl.vscode-language-pack-ja",
+                "wmaurer.change-case",
+                "LittleFoxTeam.vscode-python-test-adapter",
+                "tamasfe.even-better-toml",
+                "eamodio.gitlens",
+                "VisualStudioExptTeam.vscodeintellicode",
+                "anthropic.claude-code",
+                "shd101wyy.markdown-preview-enhanced",
+                "redhat.vscode-xml"
+            ]
         }
-    }
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "20",
+            "nodeGypDependencies": true
+        }
+    },
+    "mounts": [
+        "source=${localEnv:HOME}/.ssh,target=/home/ftuser/.ssh,type=bind,consistency=cached"
+    ]
 }

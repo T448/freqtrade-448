@@ -1,0 +1,5 @@
+commit-msg:
+  commands:
+    issue-number:
+      glob: '**/*'
+      run: .lefthook/commit-msg.sh {1}
