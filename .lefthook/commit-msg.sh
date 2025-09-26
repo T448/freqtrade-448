@@ -2,7 +2,7 @@
 COMMIT_MSG_FILE=$1
 BRANCH_NAME=$(git symbolic-ref --short HEAD)
 
-if [[ $BRANCH_NAME =~ ^task/([0-9]+) ]] || [[ $BRANCH_NAME =~ ^ml/([0-9]+) ]]; then
+if [[ $BRANCH_NAME =~ ^issue/([0-9]+) ]]; then
     ISSUE_NO="${BASH_REMATCH[1]}"
     FIRST_LINE=$(head -n 1 "$COMMIT_MSG_FILE")
 
