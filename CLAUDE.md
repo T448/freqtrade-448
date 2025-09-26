@@ -4,8 +4,6 @@ Kiro-style Spec Driven Development implementation using claude code slash comman
 
 ## Top-Level Rules
 
-- **Always use vibe_kanban** for managing tasks, To-Dos.
-- Always execute **vibe_kanban's create_task** to register tasks before running them.
 - To understand how to use a library, **always use the Contex7 MCP** to retrieve the latest information.
 - **Always use sequential-thinking** when considering implementation strategies or investigating bugs. You don't need to use it if the resolution approach has already been determined.
 - When searching for hidden folders like `.tmp`, the `List` tool is unlikely to find them. **Use the `Bash` tool to find hidden folders**.
@@ -31,7 +29,7 @@ Kiro-style Spec Driven Development implementation using claude code slash comman
 
 ## Development Guidelines
 
-- Think in English, generate responses in English
+- Think in English, but generate responses in Japanese (思考は英語、回答の生成は日本語で行うように)
 
 ## Workflow
 

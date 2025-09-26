@@ -32,7 +32,7 @@ Create initial metadata with approval tracking:
   "feature_name": "[generated-feature-name]",
   "created_at": "current_timestamp",
   "updated_at": "current_timestamp",
-  "language": "en",
+  "language": "ja",
   "phase": "initialized",
   "approvals": {
     "requirements": {
