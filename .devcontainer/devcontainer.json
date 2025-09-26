@@ -68,4 +68,7 @@
             "nodeGypDependencies": true
         }
     },
+    "mounts": [
+        "source=${localEnv:HOME}/.ssh,target=/home/ftuser/.ssh,type=bind,consistency=cached"
+    ]
 }
