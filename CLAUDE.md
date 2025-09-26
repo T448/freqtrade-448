@@ -25,6 +25,7 @@ Kiro-style Spec Driven Development implementation using claude code slash comman
 
 ### Active Specifications
 
+- **freqtrade-ml-atr-strategy**: Two-tier ML trading strategy combining rule-based ATR orders with LightGBM classification
 - Check `.kiro/specs/` for active specifications
 - Use `/kiro:spec-status [feature-name]` to check progress
 
