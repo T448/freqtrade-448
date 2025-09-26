@@ -2,9 +2,18 @@
 
 Kiro-style Spec Driven Development implementation using claude code slash commands, hooks and agents.
 
+## Top-Level Rules
+
+- **Always use vibe_kanban** for managing tasks, To-Dos.
+- Always execute **vibe_kanban's create_task** to register tasks before running them.
+- To understand how to use a library, **always use the Contex7 MCP** to retrieve the latest information.
+- **Always use sequential-thinking** when considering implementation strategies or investigating bugs. You don't need to use it if the resolution approach has already been determined.
+- When searching for hidden folders like `.tmp`, the `List` tool is unlikely to find them. **Use the `Bash` tool to find hidden folders**.
+
 ## Project Context
 
 ### Paths
+
 - Steering: `.kiro/steering/`
 - Specs: `.kiro/specs/`
 - Commands: `.claude/commands/`
@@ -15,30 +24,36 @@ Kiro-style Spec Driven Development implementation using claude code slash comman
 **Specs** (`.kiro/specs/`) - Formalize development process for individual features
 
 ### Active Specifications
+
 - Check `.kiro/specs/` for active specifications
 - Use `/kiro:spec-status [feature-name]` to check progress
 
 ## Development Guidelines
+
 - Think in English, generate responses in English
 
 ## Workflow
 
 ### Phase 0: Steering (Optional)
+
 `/kiro:steering` - Create/update steering documents
 `/kiro:steering-custom` - Create custom steering for specialized contexts
 
 Note: Optional for new features or small additions. You can proceed directly to spec-init.
 
 ### Phase 1: Specification Creation
+
 1. `/kiro:spec-init [detailed description]` - Initialize spec with detailed project description
 2. `/kiro:spec-requirements [feature]` - Generate requirements document
 3. `/kiro:spec-design [feature]` - Interactive: "Have you reviewed requirements.md? [y/N]"
 4. `/kiro:spec-tasks [feature]` - Interactive: Confirms both requirements and design review
 
 ### Phase 2: Progress Tracking
+
 `/kiro:spec-status [feature]` - Check current progress and phases
 
 ## Development Rules
+
 1. **Consider steering**: Run `/kiro:steering` before major development (optional for new features)
 2. **Follow 3-phase approval workflow**: Requirements → Design → Tasks → Implementation
 3. **Approval required**: Each phase requires human review (interactive prompt or manual)
@@ -50,9 +65,11 @@ Note: Optional for new features or small additions. You can proceed directly to 
 ## Steering Configuration
 
 ### Current Steering Files
+
 Managed by `/kiro:steering` command. Updates here reflect command changes.
 
 ### Active Steering Files
+
 - `product.md`: Always included - Product context and business objectives
 - `tech.md`: Always included - Technology stack and architectural decisions
 - `structure.md`: Always included - File organization and code patterns
@@ -66,7 +83,7 @@ Managed by `/kiro:steering` command. Updates here reflect command changes.
 -->
 
 ### Inclusion Modes
+
 - **Always**: Loaded in every interaction (default)
 - **Conditional**: Loaded for specific file patterns (e.g., "*.test.js")
 - **Manual**: Reference with `@filename.md` syntax
-
