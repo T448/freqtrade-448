@@ -8,12 +8,12 @@ Requirements tested:
 - 1.4: データ不足時の適切なエラーハンドリングと期間スキップ機能
 """
 
-import pytest
-import pandas as pd
-import numpy as np
-from unittest.mock import patch
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
+
 
 # Add user_data/strategies to path for importing ATRCalculator
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../user_data/strategies"))

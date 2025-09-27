@@ -8,11 +8,12 @@ Requirements tested:
 - 6.4: ATR×0.5距離設定の忠実な再現
 """
 
-import pytest
-import pandas as pd
-import numpy as np
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
+
 
 # Add user_data/strategies to path for importing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../user_data/strategies"))

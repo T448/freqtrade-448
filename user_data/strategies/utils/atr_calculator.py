@@ -10,11 +10,11 @@ Requirements implemented:
 - 1.4: データ不足時の適切なエラーハンドリングと期間スキップ機能
 """
 
-import pandas as pd
-import numpy as np
-import talib as ta
-from typing import Union, Tuple
 import logging
+
+import pandas as pd
+import talib as ta
+
 
 logger = logging.getLogger(__name__)
 

@@ -12,12 +12,12 @@ Requirements implemented:
 - 2.5: すべての指標の時間同期とデータポイント整合性確保
 """
 
-import pandas as pd
-import numpy as np
-import talib as ta
-from technical import qtpylib
-from typing import Union, Optional, Dict, Any
 import logging
+
+import numpy as np
+import pandas as pd
+import talib as ta
+
 
 logger = logging.getLogger(__name__)
 

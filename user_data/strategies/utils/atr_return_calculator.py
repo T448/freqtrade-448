@@ -10,12 +10,14 @@ Requirements implemented:
 - 6.4: ATR×0.5距離設定の忠実な再現
 """
 
-import pandas as pd
-import numpy as np
-from typing import Optional, Dict, Any, Tuple
 import logging
+from typing import Any
+
+import numpy as np
+import pandas as pd
 
 from .atr_calculator import ATRCalculator
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +41,8 @@ class ATRReturnCalculator:
     def calculate_atr_returns(
         self,
         dataframe: pd.DataFrame,
-        atr_period: Optional[int] = None,
-        atr_multiplier: Optional[float] = None,
+        atr_period: int | None = None,
+        atr_multiplier: float | None = None,
     ) -> pd.Series:
         """
         ATR戦略の理論リターンを計算する
@@ -143,7 +145,7 @@ class ATRReturnCalculator:
         """
         return self.calculate_atr_returns(dataframe)
 
-    def get_return_statistics(self, dataframe: pd.DataFrame) -> Dict[str, Any]:
+    def get_return_statistics(self, dataframe: pd.DataFrame) -> dict[str, Any]:
         """
         ATRリターンの統計情報を取得する
 
