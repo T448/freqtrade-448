@@ -14,6 +14,7 @@ logfile.txt
 # user_data/notebooks/*
 user_data/*/*sample*
 user_data/*/*example*
+user_data/backtest_results/*
 freqtrade-plot.html
 freqtrade-profit-plot.html
 freqtrade/rpc/api_server/ui/*
