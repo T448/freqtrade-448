@@ -670,6 +670,49 @@ jobs:
 - 🔄 **モデル進化**: 新しいアルゴリズム・特徴量の検証
 - 📈 **パフォーマンス最適化**: 処理効率・精度向上の継続的改善
 
+### TensorBoard統合（ローカル開発環境専用）
+
+**Phase 2での利用範囲**:
+
+TensorBoardはCI/CD環境では使用せず、**ローカル開発環境でのモデル訓練監視のみ**に限定します。
+
+**ローカル環境での設定**:
+
+```json
+{
+    "freqai": {
+        "tensorboard_log_dir": "user_data/tensorboard_logs",
+        "feature_parameters": {
+            "include_timeframes": ["5m", "15m"],
+            "DI_threshold": 0.5
+        }
+    }
+}
+```
+
+**TensorBoard起動方法**:
+
+```bash
+# ローカル開発マシンで実行
+cd /path/to/freqtrade
+tensorboard --logdir=user_data/tensorboard_logs --host=localhost --port=6006
+
+# アクセス: http://localhost:6006
+```
+
+**監視対象メトリクス**:
+
+- モデル訓練損失とバリデーション損失
+- 特徴量重要度の時系列変化
+- 予測精度メトリクス
+- LightGBMの早期停止状況
+
+**CI/CD環境での代替案**:
+
+- バックテスト結果のJSON出力とアーティファクト保存
+- 主要メトリクスのテキストレポート生成
+- 性能劣化時のアラート機能（Slack/Email通知）
+
 ---
 
 ## 実現可能性分析と重要な懸念点
