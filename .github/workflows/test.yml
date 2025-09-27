@@ -14,8 +14,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ "ubuntu-22.04", "ubuntu-24.04" ]
-        python-version: ["3.11", "3.12", "3.13"]
+        os: [ "ubuntu-24.04" ]
+        python-version: ["3.13" ]
 
     steps:
     - uses: actions/checkout@v5
@@ -48,11 +48,11 @@ jobs:
         python build_helpers/freqtrade_client_version_align.py
 
     - name: Tests
-      if: (!(runner.os == 'Linux' && matrix.python-version == '3.12' && matrix.os == 'ubuntu-24.04'))
+      if: (!(runner.os == 'Linux' && matrix.python-version == '3.13' && matrix.os == 'ubuntu-24.04'))
       run: |
         pytest --random-order
 
     - name: Tests with Coveralls
-      if: (runner.os == 'Linux' && matrix.python-version == '3.12' && matrix.os == 'ubuntu-24.04')
+      if: (runner.os == 'Linux' && matrix.python-version == '3.13' && matrix.os == 'ubuntu-24.04')
       run: |
         pytest --random-order --cov=freqtrade --cov=freqtrade_client --cov-config=.coveragerc
