@@ -1,9 +1,9 @@
 name: unit-test
 
 on:
-  push:
-    branches:
-      - "issue/**"
+  # push:
+  #   branches:
+  #     - "issue/**"
   workflow_call:
     secrets:
       ACCESS_TOKEN_GITHUB_ACTIONS:
