@@ -129,6 +129,7 @@ class ATRCalculator:
         result_df = dataframe.copy()
 
         # ATR計算
+        calc_period = period if period is not None else self.atr_period
         result_df["atr"] = self.calculate_atr(dataframe, period)
 
         # 指値価格計算
@@ -136,6 +137,19 @@ class ATRCalculator:
 
         result_df["atr_buy_price"] = result_df["close"] - (result_df["atr"] * calc_multiplier)
         result_df["atr_sell_price"] = result_df["close"] + (result_df["atr"] * calc_multiplier)
+
+        # 詳細ログ出力（最新5行のサンプル）
+        if len(result_df) >= 5:
+            recent_data = result_df.tail(5)
+            logger.info(f"🔢 ATR計算完了: period={calc_period}, multiplier={calc_multiplier}")
+            logger.info(f"📊 最新ATR値: {recent_data['atr'].iloc[-1]:.8f}")
+            logger.info(f"💰 最新買い価格: {recent_data['atr_buy_price'].iloc[-1]:.8f}")
+            logger.info(f"💰 最新売り価格: {recent_data['atr_sell_price'].iloc[-1]:.8f}")
+            logger.info(f"📈 クローズ価格: {recent_data['close'].iloc[-1]:.8f}")
+
+            # ATR有効性チェック
+            valid_atr_count = result_df["atr"].notna().sum()
+            logger.info(f"✅ ATR有効レコード数: {valid_atr_count}/{len(result_df)}")
 
         return result_df
 

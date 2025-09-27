@@ -37,7 +37,7 @@ class ATRMLStrategy(IStrategy):
     process_only_new_candles = True
 
     # FreqAI統合設定
-    can_short = True
+    can_short = True  # ショート取引有効
     use_exit_signal = True
 
     # ATR戦略パラメータ
@@ -90,6 +90,8 @@ class ATRMLStrategy(IStrategy):
             # FreqAI予測の取得（FreqAIが有効な場合）
             if hasattr(self, "freqai") and self.freqai:
                 dataframe = self.freqai.start(dataframe, metadata, self)
+            else:
+                logger.info("FreqAI無効 - ATRのみでバックテスト実行")
 
             pair = metadata.get("pair", "unknown")
             logger.debug(f"指標計算完了: {pair}, レコード数={len(dataframe)}")
@@ -111,26 +113,21 @@ class ATRMLStrategy(IStrategy):
         Returns:
             ATR価格が追加されたDataFrame
         """
-        try:
-            from user_data.strategies.utils.atr_calculator import ATRCalculator
+        # 基本ATR計算を使用
+        import talib as ta
 
-            calculator = ATRCalculator(
-                atr_period=self.entry_length, atr_multiplier=self.entry_point
-            )
-
-            return calculator.calculate_atr_prices(dataframe)
-
-        except ImportError:
-            logger.warning("ATRCalculatorが見つかりません。ATR価格計算をスキップします。")
-            # フォールバック: 基本ATR計算
-            dataframe["atr"] = qtpylib.atr(dataframe, timeperiod=self.entry_length)
-            dataframe["atr_buy_price"] = dataframe["close"] - (dataframe["atr"] * self.entry_point)
-            dataframe["atr_sell_price"] = dataframe["close"] + (dataframe["atr"] * self.entry_point)
-            return dataframe
-
-        except Exception as e:
-            logger.error(f"ATR価格計算エラー: {e}")
-            return dataframe
+        dataframe["atr"] = ta.ATR(
+            dataframe["high"],
+            dataframe["low"],
+            dataframe["close"],
+            timeperiod=self.entry_length,
+        )
+        dataframe["atr_buy_price"] = dataframe["close"] - (dataframe["atr"] * self.entry_point)
+        dataframe["atr_sell_price"] = dataframe["close"] + (dataframe["atr"] * self.entry_point)
+        logger.info(
+            f"🔢 基本ATR計算完了: period={self.entry_length}, multiplier={self.entry_point}"
+        )
+        return dataframe
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         """
@@ -162,13 +159,10 @@ class ATRMLStrategy(IStrategy):
             has_ml_prediction = "&-prediction" in dataframe.columns
             has_ml_probability = "&-probability" in dataframe.columns
 
-            if not has_ml_prediction:
-                pair = metadata.get("pair", "unknown")
-                logger.warning(f"ML予測なし: {pair}, フォールバック={self.fallback_mode}")
-                return self._handle_fallback_mode(dataframe, metadata)
-
-            # 2層判定ロジック実行
-            dataframe = self._apply_two_tier_logic(dataframe, metadata)
+            # 2層判定ロジック実行（FreqAI無効時はML予測を1に設定）
+            dataframe = self._apply_two_tier_logic(
+                dataframe, metadata, force_ml_positive=not has_ml_prediction
+            )
 
             # 予測詳細ログ
             if self.log_predictions:
@@ -184,7 +178,9 @@ class ATRMLStrategy(IStrategy):
             dataframe["enter_short"] = 0
             return dataframe
 
-    def _apply_two_tier_logic(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+    def _apply_two_tier_logic(
+        self, dataframe: pd.DataFrame, metadata: dict, force_ml_positive: bool = False
+    ) -> pd.DataFrame:
         """
         2層判定ロジック適用 - 要件 5.1
 
@@ -195,24 +191,54 @@ class ATRMLStrategy(IStrategy):
         Returns:
             エントリー信号が設定されたDataFrame
         """
+        pair = metadata.get("pair", "unknown")
+
         # ATR価格データの存在確認
         required_columns = ["atr", "atr_buy_price", "atr_sell_price"]
         if not all(col in dataframe.columns for col in required_columns):
-            pair = metadata.get("pair", "unknown")
-            logger.warning(f"ATR価格データ不足: {pair}")
+            logger.warning(f"🚨 ATR価格データ不足: {pair}")
             return dataframe
 
-        # ML予測条件
-        ml_prediction = dataframe["&-prediction"] == 1
+        # ML予測データの存在確認とログ
+        has_ml_prediction = "&-prediction" in dataframe.columns
+        has_ml_probability = "&-probability" in dataframe.columns
+
+        if has_ml_prediction:
+            recent_predictions = dataframe["&-prediction"].tail(5)
+            positive_count = (recent_predictions == 1).sum()
+            logger.info(f"🤖 ML予測状況 ({pair}): 最新5件中 {positive_count}件が買い予測")
+
+            if has_ml_probability:
+                recent_prob = dataframe["&-probability"].tail(5)
+                avg_confidence = recent_prob.mean()
+                logger.info(
+                    f"🎯 ML信頼度 ({pair}): 平均 {avg_confidence:.3f}, 閾値 {self.confidence_threshold}"
+                )
+
+        # ML予測条件（FreqAI無効時は強制的に1を設定）
+        if force_ml_positive:
+            ml_prediction = pd.Series([True] * len(dataframe), index=dataframe.index)
+            logger.info(f"🔧 FreqAI無効モード ({pair}): ML予測を1に設定")
+        else:
+            ml_prediction = dataframe["&-prediction"] == 1 if has_ml_prediction else False
 
         # 信頼度フィルタリング（利用可能な場合）
         confidence_filter = True
-        if "&-probability" in dataframe.columns and self.confidence_threshold > 0:
+        if has_ml_probability and self.confidence_threshold > 0:
             confidence_filter = dataframe["&-probability"] >= self.confidence_threshold
+            high_confidence_count = confidence_filter.sum()
+            logger.info(f"✅ 高信頼度予測 ({pair}): {high_confidence_count}/{len(dataframe)}件")
 
-        # ATR基本条件
+        # ATR基本条件とログ
         atr_valid = dataframe["atr"] > 0
         price_valid = (dataframe["atr_buy_price"] > 0) & (dataframe["atr_sell_price"] > 0)
+
+        if len(dataframe) > 0:
+            atr_valid_count = atr_valid.sum()
+            price_valid_count = price_valid.sum()
+            logger.info(
+                f"📊 ATR有効性 ({pair}): ATR={atr_valid_count}/{len(dataframe)}, 価格={price_valid_count}/{len(dataframe)}"
+            )
 
         # 2層統合条件
         long_condition = (
@@ -229,9 +255,16 @@ class ATRMLStrategy(IStrategy):
             & price_valid  # 価格データ有効
         )
 
-        # エントリー信号設定
+        # エントリー信号設定とログ
+        long_signals = long_condition.sum()
+        short_signals = short_condition.sum()
+
         dataframe.loc[long_condition, "enter_long"] = 1
         dataframe.loc[short_condition, "enter_short"] = 1
+
+        logger.info(
+            f"🎯 エントリー信号生成 ({pair}): ロング={long_signals}, ショート={short_signals}"
+        )
 
         return dataframe
 
@@ -321,14 +354,34 @@ class ATRMLStrategy(IStrategy):
 
             if atr_price_col in dataframe.columns:
                 atr_price = dataframe.loc[latest_idx, atr_price_col]
+                atr_value = dataframe.loc[latest_idx, "atr"] if "atr" in dataframe.columns else None
+                close_price = (
+                    dataframe.loc[latest_idx, "close"] if "close" in dataframe.columns else None
+                )
 
                 if pd.isna(atr_price) or atr_price <= 0:
-                    logger.warning(f"無効なATR価格: {pair}, {atr_price_col}={atr_price}")
+                    logger.warning(f"🚨 無効なATR価格: {pair}, {atr_price_col}={atr_price}")
                     return proposed_rate
 
-                logger.info(
-                    f"ATR指値価格: {pair} {side} {atr_price:.8f} (提案価格: {proposed_rate:.8f})"
+                # 詳細ログ出力
+                price_diff = (
+                    ((atr_price - proposed_rate) / proposed_rate * 100) if proposed_rate > 0 else 0
                 )
+                logger.info(f"💰 ATR指値価格 ({pair} {side}): {atr_price:.8f}")
+                logger.info(f"📊 市場価格: {proposed_rate:.8f} (差異: {price_diff:+.2f}%)")
+
+                if atr_value is not None:
+                    logger.info(f"🔢 ATR値: {atr_value:.8f}")
+                if close_price is not None:
+                    logger.info(f"📈 クローズ価格: {close_price:.8f}")
+                    if atr_value is not None:
+                        atr_distance = (
+                            abs(atr_price - close_price) / atr_value if atr_value > 0 else 0
+                        )
+                        logger.info(
+                            f"📏 ATR距離倍数: {atr_distance:.2f} (設定: {self.entry_point})"
+                        )
+
                 return atr_price
 
             else:
