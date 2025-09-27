@@ -10,7 +10,6 @@ Requirements tested:
 - 2.5: すべての指標の時間同期とデータポイント整合性確保
 """
 
-
 import numpy as np
 import pandas as pd
 import pytest

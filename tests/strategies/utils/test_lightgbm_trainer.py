@@ -10,7 +10,6 @@ Requirements:
 - 3.4: モデル訓練失敗時のフォールバック機能
 """
 
-
 import lightgbm as lgb
 import numpy as np
 import pandas as pd

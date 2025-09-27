@@ -10,7 +10,6 @@ Requirements:
 - ラベル品質検証機能
 """
 
-
 import numpy as np
 import pandas as pd
 import pytest
