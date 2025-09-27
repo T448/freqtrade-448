@@ -59,7 +59,7 @@ class ATRCalculator:
         if dataframe.empty:
             raise ValueError("入力データが空です")
 
-        required_columns = ['high', 'low', 'close']
+        required_columns = ["high", "low", "close"]
         missing_columns = [col for col in required_columns if col not in dataframe.columns]
         if missing_columns:
             raise ValueError(f"必須カラムが不足しています: {missing_columns}")
@@ -72,20 +72,16 @@ class ATRCalculator:
             raise ValueError(error_msg)
 
         atr_values = ta.ATR(
-            dataframe['high'].astype(float).values,
-            dataframe['low'].astype(float).values,
-            dataframe['close'].astype(float).values,
-            timeperiod=calc_period
+            dataframe["high"].astype(float).values,
+            dataframe["low"].astype(float).values,
+            dataframe["close"].astype(float).values,
+            timeperiod=calc_period,
         )
 
-        return pd.Series(atr_values, index=dataframe.index, name='atr')
+        return pd.Series(atr_values, index=dataframe.index, name="atr")
 
     def calculate_limit_price(
-        self,
-        close_price: float,
-        atr_value: float,
-        side: str,
-        multiplier: float = None
+        self, close_price: float, atr_value: float, side: str, multiplier: float = None
     ) -> float:
         """
         ATRを使用して指値価格を計算する
@@ -107,20 +103,17 @@ class ATRCalculator:
 
         calc_multiplier = multiplier if multiplier is not None else self.atr_multiplier
 
-        if side == 'buy':
+        if side == "buy":
             # 買い指値: close - (ATR * multiplier)
             return close_price - (atr_value * calc_multiplier)
-        elif side == 'sell':
+        elif side == "sell":
             # 売り指値: close + (ATR * multiplier)
             return close_price + (atr_value * calc_multiplier)
         else:
             raise ValueError(f"無効なside値です: {side}. 'buy'または'sell'を指定してください")
 
     def calculate_atr_prices(
-        self,
-        dataframe: pd.DataFrame,
-        period: int = None,
-        multiplier: float = None
+        self, dataframe: pd.DataFrame, period: int = None, multiplier: float = None
     ) -> pd.DataFrame:
         """
         データフレーム全体に対してATRと指値価格を計算する
@@ -136,21 +129,17 @@ class ATRCalculator:
         result_df = dataframe.copy()
 
         # ATR計算
-        result_df['atr'] = self.calculate_atr(dataframe, period)
+        result_df["atr"] = self.calculate_atr(dataframe, period)
 
         # 指値価格計算
         calc_multiplier = multiplier if multiplier is not None else self.atr_multiplier
 
-        result_df['atr_buy_price'] = result_df['close'] - (result_df['atr'] * calc_multiplier)
-        result_df['atr_sell_price'] = result_df['close'] + (result_df['atr'] * calc_multiplier)
+        result_df["atr_buy_price"] = result_df["close"] - (result_df["atr"] * calc_multiplier)
+        result_df["atr_sell_price"] = result_df["close"] + (result_df["atr"] * calc_multiplier)
 
         return result_df
 
-    def validate_data_sufficiency(
-        self,
-        dataframe: pd.DataFrame,
-        period: int = None
-    ) -> bool:
+    def validate_data_sufficiency(self, dataframe: pd.DataFrame, period: int = None) -> bool:
         """
         ATR計算に十分なデータがあるかチェックする
 

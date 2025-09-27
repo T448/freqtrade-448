@@ -40,7 +40,7 @@ class ATRReturnCalculator:
         self,
         dataframe: pd.DataFrame,
         atr_period: Optional[int] = None,
-        atr_multiplier: Optional[float] = None
+        atr_multiplier: Optional[float] = None,
     ) -> pd.Series:
         """
         ATR戦略の理論リターンを計算する
@@ -85,12 +85,12 @@ class ATRReturnCalculator:
         Returns:
             各期間のリターンSeries
         """
-        returns = pd.Series(index=df_with_atr.index, dtype=float, name='atr_returns')
+        returns = pd.Series(index=df_with_atr.index, dtype=float, name="atr_returns")
 
         for i in range(1, len(df_with_atr)):
-            current_price = df_with_atr['close'].iloc[i]
-            prev_atr_buy = df_with_atr['atr_buy_price'].iloc[i-1]
-            prev_atr_sell = df_with_atr['atr_sell_price'].iloc[i-1]
+            current_price = df_with_atr["close"].iloc[i]
+            prev_atr_buy = df_with_atr["atr_buy_price"].iloc[i - 1]
+            prev_atr_sell = df_with_atr["atr_sell_price"].iloc[i - 1]
 
             # ATR指値戦略のリターン計算（richmanbtc準拠）
             if pd.notna(prev_atr_buy) and pd.notna(prev_atr_sell):
@@ -109,12 +109,7 @@ class ATRReturnCalculator:
 
         return returns
 
-    def simulate_limit_execution(
-        self,
-        current_price: float,
-        limit_price: float,
-        side: str
-    ) -> bool:
+    def simulate_limit_execution(self, current_price: float, limit_price: float, side: str) -> bool:
         """
         指値注文の約定シミュレーション
 
@@ -129,9 +124,9 @@ class ATRReturnCalculator:
         Raises:
             ValueError: 無効なside値の場合
         """
-        if side == 'buy':
+        if side == "buy":
             return current_price <= limit_price
-        elif side == 'sell':
+        elif side == "sell":
             return current_price >= limit_price
         else:
             raise ValueError(f"無効なside値です: {side}. 'buy'または'sell'を指定してください")
@@ -163,23 +158,23 @@ class ATRReturnCalculator:
 
         if len(valid_returns) == 0:
             return {
-                'total_returns': 0,
-                'mean_return': np.nan,
-                'std_return': np.nan,
-                'positive_returns': 0,
-                'negative_returns': 0,
-                'zero_returns': 0,
-                'win_rate': np.nan
+                "total_returns": 0,
+                "mean_return": np.nan,
+                "std_return": np.nan,
+                "positive_returns": 0,
+                "negative_returns": 0,
+                "zero_returns": 0,
+                "win_rate": np.nan,
             }
 
         stats = {
-            'total_returns': len(valid_returns),
-            'mean_return': valid_returns.mean(),
-            'std_return': valid_returns.std(),
-            'positive_returns': (valid_returns > 0).sum(),
-            'negative_returns': (valid_returns < 0).sum(),
-            'zero_returns': (valid_returns == 0).sum(),
-            'win_rate': (valid_returns > 0).mean()
+            "total_returns": len(valid_returns),
+            "mean_return": valid_returns.mean(),
+            "std_return": valid_returns.std(),
+            "positive_returns": (valid_returns > 0).sum(),
+            "negative_returns": (valid_returns < 0).sum(),
+            "zero_returns": (valid_returns == 0).sum(),
+            "win_rate": (valid_returns > 0).mean(),
         }
 
         return stats
