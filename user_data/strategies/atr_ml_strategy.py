@@ -46,8 +46,6 @@ class ATRMLStrategy(IStrategy):
 
     # ML統合パラメータ
     confidence_threshold = 0.6  # ML予測信頼度閾値
-    fallback_mode = "skip_orders"  # フォールバック動作: "skip_orders" or "far_orders"
-    log_predictions = True  # 予測詳細ログ
 
     def __init__(self, config=None, **kwargs):
         """
@@ -67,8 +65,6 @@ class ATRMLStrategy(IStrategy):
             self.confidence_threshold = strategy_config.get(
                 "confidence_threshold", self.confidence_threshold
             )
-            self.fallback_mode = strategy_config.get("fallback_mode", self.fallback_mode)
-            self.log_predictions = strategy_config.get("log_predictions", self.log_predictions)
 
         logger.info(f"ATRMLStrategy初期化: length={self.entry_length}, point={self.entry_point}")
 
@@ -165,8 +161,7 @@ class ATRMLStrategy(IStrategy):
             )
 
             # 予測詳細ログ
-            if self.log_predictions:
-                self._log_prediction_details(dataframe, metadata)
+            self._log_prediction_details(dataframe, metadata)
 
             return dataframe
 
@@ -215,20 +210,6 @@ class ATRMLStrategy(IStrategy):
                     f"🎯 ML信頼度 ({pair}): 平均 {avg_confidence:.3f}, 閾値 {self.confidence_threshold}"
                 )
 
-        # ML予測条件（FreqAI無効時は強制的に1を設定）
-        if force_ml_positive:
-            ml_prediction = pd.Series([True] * len(dataframe), index=dataframe.index)
-            logger.info(f"🔧 FreqAI無効モード ({pair}): ML予測を1に設定")
-        else:
-            ml_prediction = dataframe["&-prediction"] == 1 if has_ml_prediction else False
-
-        # 信頼度フィルタリング（利用可能な場合）
-        confidence_filter = True
-        if has_ml_probability and self.confidence_threshold > 0:
-            confidence_filter = dataframe["&-probability"] >= self.confidence_threshold
-            high_confidence_count = confidence_filter.sum()
-            logger.info(f"✅ 高信頼度予測 ({pair}): {high_confidence_count}/{len(dataframe)}件")
-
         # ATR基本条件とログ
         atr_valid = dataframe["atr"] > 0
         price_valid = (dataframe["atr_buy_price"] > 0) & (dataframe["atr_sell_price"] > 0)
@@ -240,20 +221,68 @@ class ATRMLStrategy(IStrategy):
                 f"📊 ATR有効性 ({pair}): ATR={atr_valid_count}/{len(dataframe)}, 価格={price_valid_count}/{len(dataframe)}"
             )
 
-        # 2層統合条件
-        long_condition = (
-            ml_prediction  # 2次モデル: ML予測=1
-            & confidence_filter  # 信頼度フィルタ
-            & atr_valid  # 1次モデル: ATR有効
-            & price_valid  # 価格データ有効
-        )
+        # ML無効時は基本ATR戦略ロジックを使用
+        if force_ml_positive:
+            logger.info(f"🔧 FreqAI無効モード ({pair}): 基本ATR戦略で判定")
 
-        short_condition = (
-            ~ml_prediction  # 2次モデル: ML予測=0
-            & confidence_filter  # 信頼度フィルタ
-            & atr_valid  # 1次モデル: ATR有効
-            & price_valid  # 価格データ有効
-        )
+            # ATR戦略の基本ロジック：価格がATR指値に到達した場合の判定
+            # 前の期間のATR価格と現在の価格を比較
+            atr_buy_signal = pd.Series([False] * len(dataframe), index=dataframe.index)
+            atr_sell_signal = pd.Series([False] * len(dataframe), index=dataframe.index)
+
+            # 前期間のATR価格と現在価格の比較による売買判定
+            if len(dataframe) > 1:
+                # 現在価格が前期間のATR買い価格以下でlong signal
+                prev_atr_buy = dataframe["atr_buy_price"].shift(1)
+                prev_atr_sell = dataframe["atr_sell_price"].shift(1)
+                current_close = dataframe["close"]
+
+                # ATR戦略: 価格がATR指値レベルに到達した時の取引判定
+                atr_buy_signal = (current_close <= prev_atr_buy) & (prev_atr_buy > 0)
+                atr_sell_signal = (current_close >= prev_atr_sell) & (prev_atr_sell > 0)
+
+                buy_signals = atr_buy_signal.sum()
+                sell_signals = atr_sell_signal.sum()
+                logger.info(f"📈 ATR基本判定 ({pair}): 買い={buy_signals}, 売り={sell_signals}")
+
+            # 基本ATR戦略での条件
+            long_condition = (
+                atr_buy_signal  # ATR買いシグナル
+                & atr_valid  # ATR有効
+                & price_valid  # 価格データ有効
+            )
+
+            short_condition = (
+                atr_sell_signal  # ATR売りシグナル
+                & atr_valid  # ATR有効
+                & price_valid  # 価格データ有効
+            )
+
+        else:
+            # ML有効時は2層統合ロジック
+            ml_prediction = dataframe["&-prediction"] == 1 if has_ml_prediction else False
+
+            # 信頼度フィルタリング（利用可能な場合）
+            confidence_filter = True
+            if has_ml_probability and self.confidence_threshold > 0:
+                confidence_filter = dataframe["&-probability"] >= self.confidence_threshold
+                high_confidence_count = confidence_filter.sum()
+                logger.info(f"✅ 高信頼度予測 ({pair}): {high_confidence_count}/{len(dataframe)}件")
+
+            # 2層統合条件
+            long_condition = (
+                ml_prediction  # 2次モデル: ML予測=1
+                & confidence_filter  # 信頼度フィルタ
+                & atr_valid  # 1次モデル: ATR有効
+                & price_valid  # 価格データ有効
+            )
+
+            short_condition = (
+                ~ml_prediction  # 2次モデル: ML予測=0
+                & confidence_filter  # 信頼度フィルタ
+                & atr_valid  # 1次モデル: ATR有効
+                & price_valid  # 価格データ有効
+            )
 
         # エントリー信号設定とログ
         long_signals = long_condition.sum()
@@ -265,49 +294,6 @@ class ATRMLStrategy(IStrategy):
         logger.info(
             f"🎯 エントリー信号生成 ({pair}): ロング={long_signals}, ショート={short_signals}"
         )
-
-        return dataframe
-
-    def _handle_fallback_mode(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """
-        フォールバック動作処理 - 要件 5.2
-
-        Args:
-            dataframe: データフレーム
-            metadata: ペア情報
-
-        Returns:
-            フォールバック処理されたDataFrame
-        """
-        if self.fallback_mode == "skip_orders":
-            # 注文スキップモード：エントリー信号なし
-            pair = metadata.get("pair", "unknown")
-            logger.info(f"注文スキップモード実行: {pair}")
-            dataframe["enter_long"] = 0
-            dataframe["enter_short"] = 0
-
-        elif self.fallback_mode == "far_orders":
-            # 遠距離注文モード：ATRのみでエントリー
-            pair = metadata.get("pair", "unknown")
-            logger.info(f"遠距離注文モード実行: {pair}")
-
-            # ATR基本条件のみ適用
-            atr_valid = dataframe["atr"] > 0 if "atr" in dataframe.columns else False
-            price_valid = (
-                (
-                    ("atr_buy_price" in dataframe.columns)
-                    & ("atr_sell_price" in dataframe.columns)
-                    & (dataframe["atr_buy_price"] > 0)
-                    & (dataframe["atr_sell_price"] > 0)
-                )
-                if all(col in dataframe.columns for col in ["atr_buy_price", "atr_sell_price"])
-                else False
-            )
-
-            # 基本的なロング条件（価格上昇トレンド）
-            if atr_valid.any() and price_valid.any():
-                basic_long = dataframe["close"] > dataframe["close"].shift(1)
-                dataframe.loc[atr_valid & price_valid & basic_long, "enter_long"] = 1
 
         return dataframe
 
@@ -326,67 +312,44 @@ class ATRMLStrategy(IStrategy):
 
         Args:
             pair: 取引ペア
-            trade: 取引オブジェクト
-            current_time: 現在時刻
-            proposed_rate: 提案価格
-            entry_tag: エントリータグ
             side: 取引方向（"long" or "short"）
-            **kwargs: 追加パラメータ
 
         Returns:
             ATRベース指値価格
         """
         try:
-            # 最新のデータフレーム取得
+            # 最新のデータフレーム取得（ATR計算済み）
             dataframe = self.dp.get_pair_dataframe(pair, self.timeframe)
 
             if dataframe.empty:
                 logger.warning(f"データフレーム取得失敗: {pair}")
                 return proposed_rate
 
-            # 最新レコードのATR価格取得
-            latest_idx = dataframe.index[-1]
+            # ATR計算（軽量版 - 最新データのみ）
+            import talib as ta
 
+            current_atr = ta.ATR(
+                dataframe["high"],
+                dataframe["low"],
+                dataframe["close"],
+                timeperiod=self.entry_length,
+            ).iloc[-1]
+
+            current_close = dataframe["close"].iloc[-1]
+
+            # ATR価格計算
             if side == "long":
-                atr_price_col = "atr_buy_price"
+                atr_price = current_close - (current_atr * self.entry_point)
             else:  # short
-                atr_price_col = "atr_sell_price"
+                atr_price = current_close + (current_atr * self.entry_point)
 
-            if atr_price_col in dataframe.columns:
-                atr_price = dataframe.loc[latest_idx, atr_price_col]
-                atr_value = dataframe.loc[latest_idx, "atr"] if "atr" in dataframe.columns else None
-                close_price = (
-                    dataframe.loc[latest_idx, "close"] if "close" in dataframe.columns else None
-                )
-
-                if pd.isna(atr_price) or atr_price <= 0:
-                    logger.warning(f"🚨 無効なATR価格: {pair}, {atr_price_col}={atr_price}")
-                    return proposed_rate
-
-                # 詳細ログ出力
-                price_diff = (
-                    ((atr_price - proposed_rate) / proposed_rate * 100) if proposed_rate > 0 else 0
-                )
-                logger.info(f"💰 ATR指値価格 ({pair} {side}): {atr_price:.8f}")
-                logger.info(f"📊 市場価格: {proposed_rate:.8f} (差異: {price_diff:+.2f}%)")
-
-                if atr_value is not None:
-                    logger.info(f"🔢 ATR値: {atr_value:.8f}")
-                if close_price is not None:
-                    logger.info(f"📈 クローズ価格: {close_price:.8f}")
-                    if atr_value is not None:
-                        atr_distance = (
-                            abs(atr_price - close_price) / atr_value if atr_value > 0 else 0
-                        )
-                        logger.info(
-                            f"📏 ATR距離倍数: {atr_distance:.2f} (設定: {self.entry_point})"
-                        )
-
-                return atr_price
-
-            else:
-                logger.warning(f"ATR価格カラム不足: {pair}, {atr_price_col}")
+            # データ検証
+            if pd.isna(atr_price) or pd.isna(current_atr) or current_atr <= 0:
+                logger.warning(f"🚨 無効なATR計算: {pair}, ATR={current_atr}")
                 return proposed_rate
+
+            logger.info(f"💰 ATR指値価格 ({pair} {side}): {atr_price:.8f}")
+            return atr_price
 
         except Exception as e:
             logger.error(f"カスタムエントリー価格計算エラー ({pair}): {e}")
@@ -400,8 +363,6 @@ class ATRMLStrategy(IStrategy):
             dataframe: データフレーム
             metadata: ペア情報
         """
-        if not self.log_predictions:
-            return
 
         try:
             pair = metadata["pair"]
