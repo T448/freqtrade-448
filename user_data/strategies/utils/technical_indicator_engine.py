@@ -32,7 +32,7 @@ class TechnicalIndicatorEngine:
 
     def __init__(self):
         """初期化"""
-        logger.info("TechnicalIndicatorEngine初期化")
+        logger.debug("TechnicalIndicatorEngine initialized")
 
     def calculate_sma(self, dataframe: pd.DataFrame, period: int = 14) -> pd.Series:
         """
@@ -334,7 +334,9 @@ class TechnicalIndicatorEngine:
             # 欠損値処理 - 要件2.3
             result = self._handle_missing_values(result)
 
-            logger.info(f"テクニカル指標計算完了: {len(result.columns)}指標, {len(result)}行")
+            logger.debug(
+                f"Technical indicators calculated: {len(result.columns)} indicators, {len(result)} rows"
+            )
             return result
 
         except Exception as e:
