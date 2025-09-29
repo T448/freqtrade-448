@@ -69,6 +69,7 @@
         }
     },
     "mounts": [
-        "source=${localEnv:HOME}/.ssh,target=/home/ftuser/.ssh,type=bind,consistency=cached"
+        "source=${localEnv:HOME}/.ssh,target=/home/ftuser/.ssh,type=bind,consistency=cached",
+        "source=${localEnv:HOME}/obsidian,target=/home/ftuser/obsidian,type=bind,consistency=cached" // obsidian連携する場合
     ]
 }
