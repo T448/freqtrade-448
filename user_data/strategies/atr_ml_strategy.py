@@ -49,7 +49,7 @@ class ATRMLStrategy(IStrategy):
 
     def __init__(self, config=None, **kwargs):
         """
-        戦略初期化（設定駆動型）
+        戦略初期化
 
         Args:
             config: Freqtrade設定辞書
@@ -57,57 +57,70 @@ class ATRMLStrategy(IStrategy):
         """
         super().__init__(config, **kwargs)
 
-        # 戦略設定の選択（環境変数・設定ファイルから選択可能）
-        strategy_type = self._get_strategy_type(config)
-        strategy_config = get_strategy_config(strategy_type)
+        # 戦略設定の読み込み
+        strategy_config = self._load_strategy_config(config)
 
-        # 統合戦略ファクトリーで2層戦略を作成
+        # 2層戦略の作成
         self.two_tier_strategy = StrategyFactory.create_two_tier_strategy(strategy_config)
 
-        # 設定パラメータの展開（後方互換性維持）
+        # パラメータの展開
         primary_config = strategy_config.get("primary_model", {})
         self.entry_length = primary_config.get("params", {}).get("period", 14)
         self.entry_point = primary_config.get("params", {}).get("multiplier", 0.5)
 
-        entry_config = strategy_config.get("entry", {})
-        self.confidence_threshold = entry_config.get("confidence_threshold", 0.6)
+        secondary_config = strategy_config.get("secondary_model", {})
+        self.confidence_threshold = secondary_config.get("confidence_threshold", 0.6)
 
-        # FreqAI有効性をconfig.jsonの設定に委譲
+        # FreqAI有効性の確認
         self.freqai_enabled = (
             config and "freqai" in config and config["freqai"].get("enabled", False)
         )
 
         logger.info(
             f"ATRMLStrategy initialized: "
-            f"strategy_type={strategy_type}, "
             f"primary={primary_config.get('type', 'unknown')}, "
-            f"secondary={'enabled' if strategy_config.get('secondary_model', {}).get('enabled') else 'disabled'}, "
+            f"secondary={'enabled' if secondary_config.get('enabled') else 'disabled'}, "
             f"freqai={'enabled' if self.freqai_enabled else 'disabled'}"
         )
 
-    def _get_strategy_type(self, config) -> str:
-        """戦略タイプの決定
+    def _load_strategy_config(self, config) -> dict:
+        """戦略設定の読み込み
 
         Args:
-            config: Freqtrade設定
+            config: Freqtrade設定辞書
 
         Returns:
-            戦略タイプ名
+            戦略設定辞書
         """
-        # 優先順位: 設定ファイル > 環境変数 > デフォルト
-        strategy_type = None
+        if not config or "two_tier_strategy" not in config:
+            logger.warning("two_tier_strategy not found in config, using default")
+            return get_strategy_config("price_only")
 
-        if config and "atr_ml_strategy" in config:
-            strategy_type = config["atr_ml_strategy"].get("strategy_type")
+        two_tier_config = config["two_tier_strategy"]
 
-        if not strategy_type:
-            strategy_type = os.environ.get("STRATEGY_TYPE")
+        # プリセット指定がある場合
+        if "preset" in two_tier_config:
+            preset_name = two_tier_config["preset"]
+            logger.info(f"Loading preset: {preset_name}")
+            base_config = get_strategy_config(preset_name)
+        else:
+            # プリセットなしの場合はデフォルト設定を基準
+            base_config = get_strategy_config("default")
 
-        if not strategy_type:
-            strategy_type = "default"
+        # config.jsonの直接設定で上書き
+        if "primary_model" in two_tier_config:
+            base_config["primary_model"] = two_tier_config["primary_model"]
 
-        logger.info(f"Selected strategy type: {strategy_type}")
-        return strategy_type
+        if "secondary_model" in two_tier_config:
+            base_config["secondary_model"].update(two_tier_config["secondary_model"])
+
+        logger.info(
+            f"Strategy config loaded: "
+            f"primary={base_config['primary_model']['type']}, "
+            f"ml_enabled={base_config.get('secondary_model', {}).get('enabled', False)}"
+        )
+
+        return base_config
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         """

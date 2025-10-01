@@ -41,12 +41,16 @@ class TestATRMLStrategy:
                     "max_depth": 7,
                 },
             },
-            "atr_ml_strategy": {
-                "entry_length": 14,
-                "entry_point": 0.5,
-                "confidence_threshold": 0.6,
-                "fallback_mode": "skip_orders",  # または "far_orders"
-                "log_predictions": True,
+            "two_tier_strategy": {
+                "preset": "price_only",
+                "primary_model": {
+                    "type": "atr",
+                    "params": {"period": 14, "multiplier": 0.5},
+                },
+                "secondary_model": {
+                    "enabled": False,
+                    "confidence_threshold": 0.6,
+                },
             },
         }
 
