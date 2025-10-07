@@ -123,8 +123,9 @@ class ATRMLStrategy(IStrategy):
         return base_config
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """
-        指標計算（統合アーキテクチャ）
+        """指標計算（統合アーキテクチャ）
+
+        例外が発生した場合は適切にハンドリングし、呼び出し元に伝播させる
 
         Args:
             dataframe: OHLC データ
@@ -135,46 +136,69 @@ class ATRMLStrategy(IStrategy):
         """
         pair = metadata.get("pair", "unknown")
 
-        try:
-            # 統合戦略による価格計算
-            dataframe = self.two_tier_strategy.primary_model.calculate_entry_prices(dataframe)
+        # 1次モデルによる価格計算
+        dataframe = self._calculate_primary_prices(dataframe)
 
-            # FreqAI予測の取得と指値価格調整
-            if self.freqai_enabled:
-                try:
-                    dataframe = self.freqai.start(dataframe, metadata, self)
+        # FreqAI統合（有効時のみ）
+        if self.freqai_enabled:
+            dataframe = self._integrate_freqai_predictions(dataframe, metadata)
 
-                    # ML予測に基づく指値価格調整（richmanbtc方式）
-                    if "&-prediction" in dataframe.columns:
-                        # 大きなオフセット（取引を実質的に無効化）
-                        large_offset = dataframe["close"] * 0.1  # 10%のオフセット
+        logger.debug(f"Indicators calculation completed: {pair}, records={len(dataframe)}")
+        return dataframe
 
-                        # 予測が0（損益が0以下）の場合、指値を大きく外す
-                        buy_pred = dataframe["&-prediction"]
-                        sell_pred = dataframe["&-prediction"]
+    def _calculate_primary_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """1次モデルによる価格計算
 
-                        dataframe["buy_price"] = dataframe["buy_price"].where(
-                            buy_pred != 0, dataframe["buy_price"] - large_offset
-                        )
-                        dataframe["sell_price"] = dataframe["sell_price"].where(
-                            sell_pred != 0, dataframe["sell_price"] + large_offset
-                        )
+        統合戦略の1次モデル（ATR等）でbuy_price/sell_priceを計算
 
-                        logger.debug("ML-based price adjustment applied")
+        Raises:
+            ValueError: ATR計算に必要なデータが不足している場合
+        """
+        return self.two_tier_strategy.primary_model.calculate_entry_prices(dataframe)
 
-                    logger.debug("FreqAI prediction data integrated successfully")
-                except Exception as freqai_error:
-                    logger.warning(f"FreqAI execution failed: {freqai_error}")
-                    logger.debug("Continuing with primary model only")
-            else:
-                logger.debug("FreqAI disabled - running with primary model only")
+    def _integrate_freqai_predictions(
+        self, dataframe: pd.DataFrame, metadata: dict
+    ) -> pd.DataFrame:
+        """FreqAI予測の統合とML調整
 
-            logger.debug(f"Indicators calculation completed: {pair}, records={len(dataframe)}")
-            return dataframe
+        FreqAIによる予測を取得し、ML予測に基づく価格調整を適用
 
-        except Exception as e:
-            logger.error(f"Indicators calculation error ({pair}): {e}")
-            return dataframe
+        Raises:
+            Exception: FreqAI予測取得または価格調整に失敗した場合
+        """
+        # FreqAI予測取得
+        dataframe = self.freqai.start(dataframe, metadata, self)
+
+        # ML予測に基づく価格調整
+        if "&-prediction" in dataframe.columns:
+            dataframe = self._adjust_prices_by_ml_prediction(dataframe)
+            logger.debug("ML-based price adjustment applied")
+
+        logger.debug("FreqAI prediction data integrated successfully")
+        return dataframe
+
+    def _adjust_prices_by_ml_prediction(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """ML予測に基づく指値価格調整
+
+        予測が0（損失予測）の場合、10%オフセットで取引を実質無効化
+        1次モデル(ATR)の指値は維持しつつ、2次モデル(ML)によるフィルタリングを実現
+        """
+        # ML予測が0（損失予測）の場合、取引を避けるため
+        # 10%のオフセットで指値価格を市場価格から大きく外し、実質的に約定不可能にする
+        large_offset = dataframe["close"] * 0.1
+
+        buy_pred = dataframe["&-prediction"]
+        sell_pred = dataframe["&-prediction"]
+
+        # 予測が0の場合のみ価格を大きく外す
+        dataframe["buy_price"] = dataframe["buy_price"].where(
+            buy_pred != 0, dataframe["buy_price"] - large_offset
+        )
+        dataframe["sell_price"] = dataframe["sell_price"].where(
+            sell_pred != 0, dataframe["sell_price"] + large_offset
+        )
+
+        return dataframe
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         """
