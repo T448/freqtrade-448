@@ -4,8 +4,9 @@
 """
 
 import logging
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, Tuple
 from abc import ABC, abstractmethod
+import pandas as pd
 
 from .price_calculator import PriceCalculatorBase, PriceCalculatorFactory
 from .freqai_model_factory import FreqAIModelFactory
@@ -14,7 +15,13 @@ logger = logging.getLogger(__name__)
 
 
 class MLTrainerBase(ABC):
-    """機械学習訓練の抽象基底クラス"""
+    """機械学習訓練の抽象基底クラス
+
+    Note: 現在のFreqAI統合実装では、訓練・予測はfreqai.start()により自動実行されるため、
+    このクラスのメソッドは直接呼び出されません。
+    将来的にFreqAI以外のML統合や、カスタムトレーニングロジックを実装する際の
+    インターフェースとして保持されています。
+    """
 
     def __init__(self, params: Dict[str, Any]):
         self.params = params
@@ -25,6 +32,9 @@ class MLTrainerBase(ABC):
     def train(self, X, y) -> Dict[str, Any]:
         """モデル訓練
 
+        Note: FreqAI統合時はfreqai.start()が自動的に訓練を実行するため、
+        このメソッドは直接呼び出されません。将来の拡張性のために定義されています。
+
         Returns:
             訓練結果メトリクス
         """
@@ -32,17 +42,29 @@ class MLTrainerBase(ABC):
 
     @abstractmethod
     def predict(self, X):
-        """予測実行"""
+        """予測実行
+
+        Note: FreqAI統合時はfreqai.start()が自動的に予測を実行するため、
+        このメソッドは直接呼び出されません。将来の拡張性のために定義されています。
+        """
         pass
 
     @abstractmethod
     def predict_proba(self, X):
-        """確率予測"""
+        """確率予測
+
+        Note: FreqAI統合時はfreqai.start()が自動的に確率予測を実行するため、
+        このメソッドは直接呼び出されません。将来の拡張性のために定義されています。
+        """
         pass
 
 
 class FreqAIMLTrainer(MLTrainerBase):
-    """FreqAI統合ML訓練器"""
+    """FreqAI統合ML訓練器
+
+    Note: 実際の訓練・予測はfreqai.start()により自動実行されます。
+    このクラスは設定管理と将来の拡張性のために保持されています。
+    """
 
     def __init__(self, params: Dict[str, Any]):
         super().__init__(params)
@@ -50,24 +72,30 @@ class FreqAIMLTrainer(MLTrainerBase):
         self.freqai_params = FreqAIModelFactory.validate_model_config(self.model_type, params)
 
     def train(self, X, y) -> Dict[str, Any]:
-        """FreqAI統合による訓練（プレースホルダー実装）"""
-        # 実際の実装ではFreqAIのトレーニングパイプラインを使用
+        """FreqAI統合による訓練（プレースホルダー実装）
+
+        Note: 実際の訓練はfreqai.start()により自動実行されるため、このメソッドは呼び出されません。
+        """
         logger.info(f"Training FreqAI model: {self.model_type}")
         self.is_trained = True
         return {"status": "trained", "model_type": self.model_type}
 
     def predict(self, X):
-        """FreqAI統合による予測"""
+        """FreqAI統合による予測（プレースホルダー実装）
+
+        Note: 実際の予測はfreqai.start()により自動実行されるため、このメソッドは呼び出されません。
+        """
         if not self.is_trained:
             raise ValueError("Model not trained yet")
-        # プレースホルダー実装
         return [1] * len(X)
 
     def predict_proba(self, X):
-        """FreqAI統合による確率予測"""
+        """FreqAI統合による確率予測（プレースホルダー実装）
+
+        Note: 実際の確率予測はfreqai.start()により自動実行されるため、このメソッドは呼び出されません。
+        """
         if not self.is_trained:
             raise ValueError("Model not trained yet")
-        # プレースホルダー実装
         return [0.7] * len(X)
 
 
@@ -205,23 +233,59 @@ class TwoTierStrategy:
         result["enter_long"] = 0
         result["enter_short"] = 0
 
-        # ML予測データの確認
-        has_ml_prediction = "&-prediction" in dataframe.columns
-        has_ml_probability = "&-probability" in dataframe.columns
-
-        if not has_ml_prediction:
-            logger.warning(f"ML prediction data missing for {pair}")
+        # ML予測データの取得と検証
+        ml_data = self._extract_ml_prediction_data(dataframe, pair)
+        if ml_data is None:
             return result
 
-        # ML予測の取得
-        ml_prediction = dataframe["&-prediction"] == 1
+        # ML統合条件の計算
+        long_condition, short_condition = self._calculate_ml_entry_conditions(
+            dataframe, ml_data, self.config
+        )
+
+        # 信号設定
+        result.loc[long_condition, "enter_long"] = 1
+        result.loc[short_condition, "enter_short"] = 1
+
+        self._log_signal_summary(pair, long_condition, short_condition)
+        return result
+
+    def _extract_ml_prediction_data(
+        self, dataframe: pd.DataFrame, pair: str
+    ) -> Optional[Dict[str, pd.Series]]:
+        """ML予測データの抽出と検証
+
+        Returns:
+            ML予測データ辞書、または予測データが不足している場合はNone
+        """
+        has_prediction = "&-prediction" in dataframe.columns
+        has_probability = "&-probability" in dataframe.columns
+
+        if not has_prediction:
+            logger.warning(f"ML prediction data missing for {pair}")
+            return None
+
+        return {
+            "prediction": dataframe["&-prediction"] == 1,
+            "probability": dataframe["&-probability"] if has_probability else None,
+        }
+
+    def _calculate_ml_entry_conditions(
+        self, dataframe: pd.DataFrame, ml_data: Dict[str, pd.Series], config: Dict[str, Any]
+    ) -> Tuple[pd.Series, pd.Series]:
+        """ML統合エントリー条件の計算
+
+        Returns:
+            (long_condition, short_condition)のタプル
+        """
+        ml_prediction = ml_data["prediction"]
+        ml_probability = ml_data["probability"]
 
         # 信頼度フィルタリング
-        confidence_filter = True
-        confidence_threshold = self.config.get("entry", {}).get("confidence_threshold", 0.6)
-
-        if has_ml_probability and confidence_threshold > 0:
-            confidence_filter = dataframe["&-probability"] >= confidence_threshold
+        confidence_threshold = config.get("entry", {}).get("confidence_threshold", 0.6)
+        confidence_filter = self._apply_confidence_threshold(
+            ml_probability, confidence_threshold, dataframe.index
+        )
 
         # 価格データの有効性チェック
         price_valid = (dataframe["buy_price"] > 0) & (dataframe["sell_price"] > 0)
@@ -230,15 +294,42 @@ class TwoTierStrategy:
         long_condition = ml_prediction & confidence_filter & price_valid
         short_condition = ~ml_prediction & confidence_filter & price_valid
 
-        # 信号設定
-        result.loc[long_condition, "enter_long"] = 1
-        result.loc[short_condition, "enter_short"] = 1
+        return long_condition, short_condition
 
+    def _apply_confidence_threshold(
+        self, probability: Optional[pd.Series], threshold: float, index: pd.Index
+    ) -> pd.Series:
+        """信頼度閾値フィルタの適用
+
+        Args:
+            probability: ML予測確率（0-1の範囲）
+            threshold: 信頼度閾値
+            index: 結果Seriesのインデックス
+
+        Returns:
+            信頼度フィルタの条件Series
+
+        Raises:
+            ValueError: thresholdが不正な値の場合
+        """
+        if not (0 <= threshold <= 1):
+            raise ValueError(f"Threshold must be between 0 and 1, got {threshold}")
+
+        # probabilityがNoneの場合は、信頼度フィルタリングを無効化（全てTrue）
+        if probability is None:
+            if threshold > 0:
+                logger.warning("Probability data not available, confidence filtering disabled")
+            return pd.Series(True, index=index)
+
+        return probability >= threshold
+
+    def _log_signal_summary(
+        self, pair: str, long_condition: pd.Series, short_condition: pd.Series
+    ) -> None:
+        """信号生成サマリーのログ出力"""
         long_signals = long_condition.sum()
         short_signals = short_condition.sum()
         logger.info(f"ML integrated signals {pair}: long={long_signals}, short={short_signals}")
-
-        return result
 
     def _generate_basic_price_signals(self, dataframe, metadata: Dict[str, Any]):
         """基本価格信号生成"""
@@ -283,55 +374,6 @@ class TwoTierStrategy:
         except Exception as e:
             logger.error(f"Entry price calculation error {pair}: {e}")
             return proposed_rate
-
-    def train_secondary_model(self, dataframe, metadata: Dict[str, Any]):
-        """2次モデル訓練（必要時のみ）"""
-        if not self.is_ml_enabled:
-            logger.info("Secondary model disabled, skipping training")
-            return None
-
-        pair = metadata.get("pair", "unknown")
-        logger.info(f"Training secondary model for {pair}")
-
-        try:
-            # 簡易特徴量生成（実際の実装ではより詳細な特徴量を使用）
-            features_df = self._generate_basic_features(dataframe)
-
-            # ラベル生成（実際の実装ではより精密なラベル生成を使用）
-            labels = self._generate_basic_labels(dataframe)
-
-            if len(features_df) < 100:  # 最小サンプル数チェック
-                logger.warning(f"Insufficient training samples for {pair}: {len(features_df)}")
-                return None
-
-            # モデル訓練
-            training_result = self.secondary_model.train(features_df, labels)
-
-            logger.info(f"Secondary model training completed for {pair}: {training_result}")
-            return training_result
-
-        except Exception as e:
-            logger.error(f"Secondary model training error {pair}: {e}")
-            return None
-
-    def _generate_basic_features(self, dataframe):
-        """基本特徴量生成（プレースホルダー実装）"""
-        # 実際の実装では技術指標エンジンを使用
-        import talib as ta
-
-        features = dataframe[["close", "volume"]].copy()
-        features["rsi"] = ta.RSI(dataframe["close"])
-        features["sma_20"] = ta.SMA(dataframe["close"], timeperiod=20)
-
-        return features.dropna()
-
-    def _generate_basic_labels(self, dataframe):
-        """基本ラベル生成（プレースホルダー実装）"""
-        # 簡易リターンベースラベル
-        returns = dataframe["close"].pct_change(1).shift(-1)
-        labels = (returns > 0.001).astype(int)
-
-        return labels.dropna()
 
     def get_freqai_config(self) -> Dict[str, Any]:
         """FreqAI設定を取得"""
