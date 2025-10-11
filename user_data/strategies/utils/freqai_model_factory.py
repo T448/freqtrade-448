@@ -4,9 +4,69 @@ FreqAIの既存分類器・回帰器を設定駆動型で統合選択
 """
 
 import logging
-from typing import Dict, Any, Optional, Type
+from dataclasses import dataclass, asdict
+from typing import Dict, Any, Optional, Type, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FeatureParameters:
+    """特徴量パラメータ（イミュータブル）
+
+    frozenを使用して設定値の意図しない変更を防止
+    """
+
+    include_timeframes: Tuple[str, ...] = ("5m", "15m", "1h")
+    include_corr_pairlist: Tuple[str, ...] = ()
+    label_period_candles: int = 24
+    include_shifted_candles: int = 2
+    DI_threshold: float = 0.9
+    weight_factor: int = 0
+    principal_component_analysis: bool = False
+    use_SVM_to_remove_outliers: bool = True
+    indicator_periods_candles: Tuple[int, ...] = (10, 20, 50)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """FreqAI設定用の辞書に変換
+
+        タプルをリストに変換してFreqAI互換形式にする
+        """
+        result = asdict(self)
+        result["include_timeframes"] = list(result["include_timeframes"])
+        result["include_corr_pairlist"] = list(result["include_corr_pairlist"])
+        result["indicator_periods_candles"] = list(result["indicator_periods_candles"])
+        return result
+
+
+@dataclass(frozen=True)
+class DataSplitParameters:
+    """データ分割パラメータ（イミュータブル）
+
+    frozenを使用して設定値の意図しない変更を防止
+    """
+
+    test_size: float = 0.33
+    shuffle: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """FreqAI設定用の辞書に変換"""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TrainingParameters:
+    """学習パラメータ（イミュータブル）
+
+    frozenを使用して設定値の意図しない変更を防止
+    """
+
+    train_period_days: int = 30
+    backtest_period_days: int = 7
+
+    def to_dict(self) -> Dict[str, Any]:
+        """FreqAI設定用の辞書に変換"""
+        return asdict(self)
 
 
 class FreqAIModelFactory:
@@ -51,29 +111,6 @@ class FreqAIModelFactory:
 
         return cls._available_models[model_type]
 
-    # デフォルト設定定数
-    DEFAULT_FEATURE_PARAMS = {
-        "include_timeframes": ["5m", "15m", "1h"],
-        "include_corr_pairlist": [],
-        "label_period_candles": 24,
-        "include_shifted_candles": 2,
-        "DI_threshold": 0.9,
-        "weight_factor": 0,
-        "principal_component_analysis": False,
-        "use_SVM_to_remove_outliers": True,
-        "indicator_periods_candles": [10, 20, 50],
-    }
-
-    DEFAULT_DATA_SPLIT_PARAMS = {
-        "test_size": 0.33,
-        "shuffle": False,
-    }
-
-    DEFAULT_TRAINING_PARAMS = {
-        "train_period_days": 30,
-        "backtest_period_days": 7,
-    }
-
     @classmethod
     def create_freqai_config(cls, strategy_config: Dict[str, Any]) -> Dict[str, Any]:
         """戦略設定からFreqAI設定生成
@@ -92,62 +129,61 @@ class FreqAIModelFactory:
         model_type = secondary_config.get("type", "lightgbm_classifier")
         model_params = secondary_config.get("params", {})
 
-        # FreqAIモデル名取得
-        freqai_model = cls.get_model_name(model_type)
+        # デフォルト設定のインスタンス化
+        default_feature_params = FeatureParameters()
+        default_data_split_params = DataSplitParameters()
+        default_training_params = TrainingParameters()
 
-        # 設定の統合（デフォルト値 + ユーザー設定）
-        feature_params = {**cls.DEFAULT_FEATURE_PARAMS}
-        feature_params.update(
+        # 設定値の統合（デフォルト値 + ユーザー設定）
+        feature_params_dict = default_feature_params.to_dict()
+        feature_params_dict.update(
             {
                 "include_timeframes": strategy_config.get(
-                    "include_timeframes", cls.DEFAULT_FEATURE_PARAMS["include_timeframes"]
+                    "include_timeframes", list(default_feature_params.include_timeframes)
                 ),
                 "include_corr_pairlist": strategy_config.get(
-                    "include_corr_pairs", cls.DEFAULT_FEATURE_PARAMS["include_corr_pairlist"]
+                    "include_corr_pairs", list(default_feature_params.include_corr_pairlist)
                 ),
                 "label_period_candles": strategy_config.get(
-                    "label_period_candles", cls.DEFAULT_FEATURE_PARAMS["label_period_candles"]
+                    "label_period_candles", default_feature_params.label_period_candles
                 ),
                 "include_shifted_candles": strategy_config.get(
-                    "include_shifted_candles", cls.DEFAULT_FEATURE_PARAMS["include_shifted_candles"]
+                    "include_shifted_candles", default_feature_params.include_shifted_candles
                 ),
                 "DI_threshold": strategy_config.get(
-                    "DI_threshold", cls.DEFAULT_FEATURE_PARAMS["DI_threshold"]
+                    "DI_threshold", default_feature_params.DI_threshold
                 ),
                 "weight_factor": strategy_config.get(
-                    "weight_factor", cls.DEFAULT_FEATURE_PARAMS["weight_factor"]
+                    "weight_factor", default_feature_params.weight_factor
                 ),
                 "principal_component_analysis": strategy_config.get(
-                    "use_pca", cls.DEFAULT_FEATURE_PARAMS["principal_component_analysis"]
+                    "use_pca", default_feature_params.principal_component_analysis
                 ),
                 "use_SVM_to_remove_outliers": strategy_config.get(
-                    "use_svm_outlier_removal",
-                    cls.DEFAULT_FEATURE_PARAMS["use_SVM_to_remove_outliers"],
+                    "use_svm_outlier_removal", default_feature_params.use_SVM_to_remove_outliers
                 ),
                 "indicator_periods_candles": strategy_config.get(
-                    "indicator_periods", cls.DEFAULT_FEATURE_PARAMS["indicator_periods_candles"]
+                    "indicator_periods", list(default_feature_params.indicator_periods_candles)
                 ),
             }
         )
 
-        data_split_params = {**cls.DEFAULT_DATA_SPLIT_PARAMS}
-        data_split_params.update(
+        data_split_params_dict = default_data_split_params.to_dict()
+        data_split_params_dict.update(
             {
-                "test_size": strategy_config.get(
-                    "test_size", cls.DEFAULT_DATA_SPLIT_PARAMS["test_size"]
-                ),
-                "shuffle": strategy_config.get("shuffle", cls.DEFAULT_DATA_SPLIT_PARAMS["shuffle"]),
+                "test_size": strategy_config.get("test_size", default_data_split_params.test_size),
+                "shuffle": strategy_config.get("shuffle", default_data_split_params.shuffle),
             }
         )
 
-        training_params = {**cls.DEFAULT_TRAINING_PARAMS, **model_params}
-        training_params.update(
+        training_params_dict = {**default_training_params.to_dict(), **model_params}
+        training_params_dict.update(
             {
                 "train_period_days": strategy_config.get(
-                    "train_period_days", cls.DEFAULT_TRAINING_PARAMS["train_period_days"]
+                    "train_period_days", default_training_params.train_period_days
                 ),
                 "backtest_period_days": strategy_config.get(
-                    "backtest_period_days", cls.DEFAULT_TRAINING_PARAMS["backtest_period_days"]
+                    "backtest_period_days", default_training_params.backtest_period_days
                 ),
                 "identifier": f"2tier_{model_type}",
             }
@@ -155,9 +191,9 @@ class FreqAIModelFactory:
 
         return {
             "enabled": True,
-            "model_training_parameters": training_params,
-            "feature_parameters": feature_params,
-            "data_split_parameters": data_split_params,
+            "model_training_parameters": training_params_dict,
+            "feature_parameters": feature_params_dict,
+            "data_split_parameters": data_split_params_dict,
         }
 
     @classmethod
