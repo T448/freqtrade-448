@@ -13,7 +13,7 @@ import sys
 from typing import Optional
 
 import pandas as pd
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import IStrategy, DecimalParameter
 
 # パス設定
 sys.path.append(os.path.dirname(__file__))
@@ -47,6 +47,11 @@ class ATRMLStrategy(IStrategy):
     can_short = True
     use_exit_signal = True
 
+    # Hyperopt最適化対象外の設定パラメータ
+    ml_rejection_offset_ratio = DecimalParameter(
+        0.01, 0.5, default=0.1, decimals=2, space="buy", optimize=False, load=True
+    )
+
     def __init__(self, config=None, **kwargs):
         """
         戦略初期化
@@ -76,12 +81,43 @@ class ATRMLStrategy(IStrategy):
             config and "freqai" in config and config["freqai"].get("enabled", False)
         )
 
+        # パラメータの検証
+        self._validate_parameters()
+
         logger.info(
             f"ATRMLStrategy initialized: "
             f"primary={primary_config.get('type', 'unknown')}, "
             f"secondary={'enabled' if secondary_config.get('enabled') else 'disabled'}, "
             f"freqai={'enabled' if self.freqai_enabled else 'disabled'}"
         )
+
+    def _validate_parameters(self) -> None:
+        """戦略パラメータの検証
+
+        ml_rejection_offset_ratioの値が適切な範囲内にあることを確認し、
+        推奨範囲外の場合は警告を出力する
+
+        Raises:
+            ValueError: パラメータが許容範囲外の場合
+        """
+        offset = self.ml_rejection_offset_ratio.value
+
+        if not (0.01 <= offset <= 0.5):
+            raise ValueError(
+                f"ml_rejection_offset_ratio must be between 0.01 and 0.5, got {offset}"
+            )
+
+        # 警告レベルのチェック（極端な値の場合に推奨範囲を提示）
+        if offset < 0.05:
+            logger.warning(
+                f"ml_rejection_offset_ratio={offset} is very small. "
+                f"Rejected trades may still execute in volatile markets."
+            )
+        elif offset > 0.2:
+            logger.warning(
+                f"ml_rejection_offset_ratio={offset} is large. "
+                f"May miss profitable trades due to overly conservative filtering."
+            )
 
     def _load_strategy_config(self, config) -> dict:
         """戦略設定の読み込み
@@ -149,8 +185,6 @@ class ATRMLStrategy(IStrategy):
     def _calculate_primary_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
         """1次モデルによる価格計算
 
-        統合戦略の1次モデル（ATR等）でbuy_price/sell_priceを計算
-
         Raises:
             ValueError: ATR計算に必要なデータが不足している場合
         """
@@ -180,29 +214,43 @@ class ATRMLStrategy(IStrategy):
     def _adjust_prices_by_ml_prediction(self, dataframe: pd.DataFrame) -> pd.DataFrame:
         """ML予測に基づく指値価格調整
 
-        予測が0（損失予測）の場合、10%オフセットで取引を実質無効化
+        予測が0(損失予測)の場合、10%オフセットで取引を実質無効化
         1次モデル(ATR)の指値は維持しつつ、2次モデル(ML)によるフィルタリングを実現
-        """
-        # ML予測が0（損失予測）の場合、取引を避けるため
-        # 10%のオフセットで指値価格を市場価格から大きく外し、実質的に約定不可能にする
-        large_offset = dataframe["close"] * 0.1
 
-        buy_pred = dataframe["&-prediction"]
-        sell_pred = dataframe["&-prediction"]
+        Raises:
+            ValueError: 必要なカラムが存在しない場合
+        """
+        # カラム存在確認
+        required_columns = {"close", "buy_price", "sell_price", "&-prediction"}
+        missing_columns = required_columns - set(dataframe.columns)
+
+        if missing_columns:
+            available_columns = sorted(dataframe.columns.tolist())
+            raise ValueError(
+                f"Required columns missing for ML price adjustment: {sorted(missing_columns)}. "
+                f"Available columns: {available_columns}. "
+                f"Please ensure: (1) populate_indicators ran successfully, "
+                f"(2) primary model calculated buy_price/sell_price, "
+                f"(3) FreqAI generated predictions (&-prediction column)."
+            )
+
+        # ML予測が0(損失予測)の場合、取引を避けるため
+        # 設定可能なオフセット比率で指値価格を市場価格から外し、実質的に約定不可能にする
+        large_offset = dataframe["close"] * self.ml_rejection_offset_ratio.value
+        prediction = dataframe["&-prediction"]
 
         # 予測が0の場合のみ価格を大きく外す
         dataframe["buy_price"] = dataframe["buy_price"].where(
-            buy_pred != 0, dataframe["buy_price"] - large_offset
+            prediction != 0, dataframe["buy_price"] - large_offset
         )
         dataframe["sell_price"] = dataframe["sell_price"].where(
-            sell_pred != 0, dataframe["sell_price"] + large_offset
+            prediction != 0, dataframe["sell_price"] + large_offset
         )
 
         return dataframe
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """
-        エントリートレンド生成（統合戦略）
+        """エントリートレンド生成
 
         Args:
             dataframe: 指標付きDataFrame
@@ -210,18 +258,15 @@ class ATRMLStrategy(IStrategy):
 
         Returns:
             エントリー信号が追加されたDataFrame
-        """
-        try:
-            # 統合戦略でエントリー信号生成
-            return self.two_tier_strategy.generate_entry_signals(dataframe, metadata)
 
-        except Exception as e:
-            pair = metadata.get("pair", "unknown")
-            logger.error(f"Entry trend generation error {pair}: {e}")
-            # 安全なフォールバック
-            dataframe["enter_long"] = 0
-            dataframe["enter_short"] = 0
-            return dataframe
+        Raises:
+            ValueError: カラム不足など設定の問題
+            Exception: その他の予期しないエラー
+
+        Note:
+            エラーが発生した場合、Freqtradeフレームワークが適切にハンドリングします
+        """
+        return self.two_tier_strategy.generate_entry_signals(dataframe, metadata)
 
     def custom_entry_price(
         self,
@@ -234,17 +279,16 @@ class ATRMLStrategy(IStrategy):
         **kwargs,
     ) -> float:
         """
-        エントリー価格計算（統合戦略）
+        エントリー価格計算
 
         Args:
             pair: 取引ペア
             side: 取引方向
 
         Returns:
-            統合戦略による指値価格
+            1次モデルによる指値価格
         """
         try:
-            # 統合戦略でエントリー価格計算
             return self.two_tier_strategy.calculate_entry_price(pair, side, proposed_rate)
 
         except Exception as e:

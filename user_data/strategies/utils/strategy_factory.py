@@ -4,12 +4,14 @@
 """
 
 import logging
-from typing import Dict, Any, Optional, Union, Tuple
 from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Tuple, Union
+
 import pandas as pd
 
-from .price_calculator import PriceCalculatorBase, PriceCalculatorFactory
 from .freqai_model_factory import FreqAIModelFactory
+from .price_calculator import PriceCalculatorBase, PriceCalculatorFactory
+
 
 logger = logging.getLogger(__name__)
 
@@ -204,41 +206,59 @@ class TwoTierStrategy:
         )
 
     def generate_entry_signals(self, dataframe, metadata: Dict[str, Any]):
-        """エントリー信号生成"""
-        pair = metadata.get("pair", "unknown")
+        """エントリー信号生成
 
-        try:
-            # 1次モデル: 価格計算
-            price_data = self.primary_model.calculate_entry_prices(dataframe)
+        1次モデルで価格計算を行い、2次モデルの有効状態に応じて
+        適切な戦略で信号を生成
 
-            if self.is_ml_enabled:
-                # 2次モデル有効時: ML統合戦略
-                return self._generate_ml_integrated_signals(price_data, metadata)
-            else:
-                # 2次モデル無効時: 基本価格戦略
-                return self._generate_basic_price_signals(price_data, metadata)
+        Raises:
+            ValueError: カラム不足など、呼び出し元で対処すべきエラー
+            Exception: その他の予期しないエラー
+        """
+        # 1次モデル: 価格計算（エラーは呼び出し元に伝播）
+        price_data = self.primary_model.calculate_entry_prices(dataframe)
 
-        except Exception as e:
-            logger.error(f"Signal generation error {pair}: {e}")
-            # フォールバック: 信号なし
-            result = dataframe.copy()
-            result["enter_long"] = 0
-            result["enter_short"] = 0
-            return result
+        if self.is_ml_enabled:
+            # 2次モデル有効時: ML予測を使用した信号生成
+            return self._generate_ml_integrated_signals(price_data, metadata)
+        else:
+            # 2次モデル無効時: 価格のみの信号生成
+            return self._generate_basic_price_signals(price_data, metadata)
+
+    def _initialize_signal_dataframe(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """信号DataFrameの初期化
+
+        enter_long, enter_shortカラムを追加（既存の場合は0にリセット）
+
+        Args:
+            dataframe: 初期化対象のDataFrame
+
+        Returns:
+            初期化されたDataFrame（同じオブジェクト）
+        """
+        dataframe["enter_long"] = 0
+        dataframe["enter_short"] = 0
+        return dataframe
 
     def _generate_ml_integrated_signals(self, dataframe, metadata: Dict[str, Any]):
-        """ML統合信号生成"""
+        """ML予測を使用した信号生成
+
+        ML予測データを使用してエントリー信号を生成
+        NaN検証とカラム存在確認を実施
+
+        Raises:
+            ValueError: 必要な価格カラムが存在しない場合
+        """
         pair = metadata.get("pair", "unknown")
-        result = dataframe.copy()
-        result["enter_long"] = 0
-        result["enter_short"] = 0
+        result = self._initialize_signal_dataframe(dataframe)
 
         # ML予測データの取得と検証
         ml_data = self._extract_ml_prediction_data(dataframe, pair)
         if ml_data is None:
+            logger.info(f"ML prediction unavailable for {pair}, returning empty signals")
             return result
 
-        # ML統合条件の計算
+        # エントリー条件の計算（ValueErrorは呼び出し元に伝播）
         long_condition, short_condition = self._calculate_ml_entry_conditions(
             dataframe, ml_data, self.config
         )
@@ -252,11 +272,12 @@ class TwoTierStrategy:
 
     def _extract_ml_prediction_data(
         self, dataframe: pd.DataFrame, pair: str
-    ) -> Optional[Dict[str, pd.Series]]:
-        """ML予測データの抽出と検証
+    ) -> Optional[Dict[str, Union[pd.Series, None]]]:
+        """ML予測データの抽出とNaN検証
 
         Returns:
-            ML予測データ辞書、または予測データが不足している場合はNone
+            ML予測データ辞書（prediction, probability, valid_mask）、
+            または予測データが不足/全てNaNの場合はNone
         """
         has_prediction = "&-prediction" in dataframe.columns
         has_probability = "&-probability" in dataframe.columns
@@ -265,21 +286,83 @@ class TwoTierStrategy:
             logger.warning(f"ML prediction data missing for {pair}")
             return None
 
+        # NaN検証
+        prediction_col = dataframe["&-prediction"]
+        prediction_nan_mask = prediction_col.isna()
+        total_rows = len(dataframe)
+        nan_count = prediction_nan_mask.sum()
+        valid_count = total_rows - nan_count
+
+        # 全てNaNの場合は処理不可
+        if nan_count == total_rows:
+            logger.error(
+                f"ML prediction data all NaN for {pair}: "
+                f"total={total_rows}, nan={nan_count}, valid={valid_count}. "
+                f"Cannot proceed with ML-based trading."
+            )
+            return None
+
+        # 部分的にNaNの場合は警告を出しつつ処理継続
+        # リアルタイム取引では一時的なデータ欠損が発生することがあるため、
+        # 有効なデータだけで取引を継続する
+        if nan_count > 0:
+            nan_ratio = (nan_count / total_rows) * 100
+            logger.warning(
+                f"ML prediction contains NaN values for {pair}: "
+                f"total={total_rows}, nan={nan_count} ({nan_ratio:.2f}%), valid={valid_count}. "
+                f"NaN rows will be excluded from signal generation."
+            )
+
+        # valid_maskを生成（NaNでない行を示すboolean mask）
+        valid_mask = ~prediction_nan_mask
+
+        # probabilityもNaNチェック（存在する場合）
+        probability_series = None
+        if has_probability:
+            probability_col = dataframe["&-probability"]
+            prob_nan_mask = probability_col.isna()
+            prob_nan_count = prob_nan_mask.sum()
+
+            if prob_nan_count > 0:
+                logger.warning(
+                    f"ML probability contains {prob_nan_count} NaN values for {pair}. "
+                    f"These will be handled by confidence filtering."
+                )
+
+            probability_series = probability_col
+
         return {
-            "prediction": dataframe["&-prediction"] == 1,
-            "probability": dataframe["&-probability"] if has_probability else None,
+            "prediction": prediction_col == 1,
+            "probability": probability_series,
+            "valid_mask": valid_mask,
         }
 
     def _calculate_ml_entry_conditions(
         self, dataframe: pd.DataFrame, ml_data: Dict[str, pd.Series], config: Dict[str, Any]
     ) -> Tuple[pd.Series, pd.Series]:
-        """ML統合エントリー条件の計算
+        """ML予測とATR価格を組み合わせたエントリー条件の計算
 
         Returns:
             (long_condition, short_condition)のタプル
+
+        Raises:
+            ValueError: 必要な価格カラムが存在しない場合
         """
+        # 価格カラム存在確認
+        required_price_columns = {"buy_price", "sell_price"}
+        missing_price_columns = required_price_columns - set(dataframe.columns)
+
+        if missing_price_columns:
+            available_columns = sorted(dataframe.columns.tolist())
+            raise ValueError(
+                f"Required price columns missing: {sorted(missing_price_columns)}. "
+                f"Available columns: {available_columns}. "
+                f"Please ensure primary model calculated these columns in populate_indicators."
+            )
+
         ml_prediction = ml_data["prediction"]
         ml_probability = ml_data["probability"]
+        valid_mask = ml_data["valid_mask"]
 
         # 信頼度フィルタリング
         confidence_threshold = config.get("entry", {}).get("confidence_threshold", 0.6)
@@ -290,9 +373,9 @@ class TwoTierStrategy:
         # 価格データの有効性チェック
         price_valid = (dataframe["buy_price"] > 0) & (dataframe["sell_price"] > 0)
 
-        # ML統合条件
-        long_condition = ml_prediction & confidence_filter & price_valid
-        short_condition = ~ml_prediction & confidence_filter & price_valid
+        # エントリー条件（valid_maskでNaN行を除外）
+        long_condition = ml_prediction & confidence_filter & price_valid & valid_mask
+        short_condition = ~ml_prediction & confidence_filter & price_valid & valid_mask
 
         return long_condition, short_condition
 
@@ -332,13 +415,16 @@ class TwoTierStrategy:
         logger.info(f"ML integrated signals {pair}: long={long_signals}, short={short_signals}")
 
     def _generate_basic_price_signals(self, dataframe, metadata: Dict[str, Any]):
-        """基本価格信号生成"""
+        """価格ブレイクアウト信号生成
+
+        ML予測なしの価格ブレイクアウト戦略
+        前期間の指値価格に現在価格が到達した場合に信号を生成
+        """
         pair = metadata.get("pair", "unknown")
-        result = dataframe.copy()
-        result["enter_long"] = 0
-        result["enter_short"] = 0
+        result = self._initialize_signal_dataframe(dataframe)
 
         if len(dataframe) <= 1:
+            logger.debug(f"Insufficient data for {pair} (rows={len(dataframe)})")
             return result
 
         # 前期間の価格と現在価格の比較
@@ -346,7 +432,7 @@ class TwoTierStrategy:
         prev_sell_price = dataframe["sell_price"].shift(1)
         current_close = dataframe["close"]
 
-        # 価格戦略: 価格が指値レベルに到達した時の取引判定
+        # 価格が指値レベルに到達した時の取引判定
         buy_signal = (current_close <= prev_buy_price) & (prev_buy_price > 0)
         sell_signal = (current_close >= prev_sell_price) & (prev_sell_price > 0)
 
