@@ -1,4 +1,4 @@
-# 設計上の課題: Strategy Factory アーキテクチャ
+# 設計上の課題: Strategy Factory アーキテクチャ（Phase 1リファクタリング設計）
 
 ## メタ情報
 
@@ -6,13 +6,37 @@
 - **最終更新**: 2025-10-11
 - **コミットハッシュ**: 3ddd09b9dbb4929e14299fa2eab04c44229bd7f1
 - **関連ファイル**:
+  - `user_data/strategies/two_tier_strategy.py`
   - `user_data/strategies/utils/strategy_factory.py`
-  - `user_data/strategies/atr_ml_strategy.py`
   - `config.json`
+
+## ドキュメントの位置づけ
+
+**現状**: Phase 1リファクタリング実施中（既存実装は動作しているが、設計意図と乖離）
+
+**背景**: コードレビュー対応中に、`TwoTierStrategy`クラスにおける具体的な戦略ロジックのハードコーディングに関する設計上の課題が指摘された。既存実装はutil層に戦略ロジックが混在しており、拡張性と保守性に課題がある。
+
+**本ドキュメントの目的**:
+
+- **Phase 1**: 既存実装を設計意図に沿ってリファクタリングするための設計指針
+- **Phase 2拡張性**: 将来の機能拡張（複数戦略の追加、Optuna最適化等）を見据えた設計
+
+**Phase 1での対応**:
+
+- 基本的なファクトリーパターンの実装（ATRBreakoutStrategy、LightGBMClassifier）
+- util層からの具体的な戦略ロジックの分離
+- FreqtradeおよびFreqAIとの正しい統合
+- Phase 2で容易に拡張できるアーキテクチャの確立
+
+**Phase 2以降の拡張**:
+
+- 複数の1次戦略実装（平均回帰、ボリンジャーバンド等）
+- 複数の2次モデル実装（XGBoost、CatBoost等）
+- Optuna最適化機能の追加
 
 ## 概要
 
-コードレビュー対応中に、`TwoTierStrategy`クラスにおける具体的な戦略ロジックのハードコーディングに関する設計上の課題が指摘された。本ドキュメントでは、より拡張性と柔軟性の高いアーキテクチャを提案する。
+本ドキュメントでは、Phase 2への拡張性を考慮しつつ、Phase 1で実装すべきより拡張性と柔軟性の高いアーキテクチャを提案する。
 
 ## 現状の実装
 
@@ -206,31 +230,37 @@ df['y_sell'] = np.where(
 
 ```
 user_data/strategies/
-├── primary/                    # 1次戦略（価格計算＋信号生成）
+├── primary/                    # 1次戦略（ドメインロジック）
 │   ├── __init__.py
 │   ├── base.py                # PrimaryStrategyBase抽象クラス
-│   ├── atr_breakout.py        # ATR価格＋ブレイクアウト信号
-│   ├── atr_mean_reversion.py  # ATR価格＋平均回帰信号
-│   ├── bollinger_breakout.py  # ボリンジャーバンド＋ブレイクアウト
-│   └── simple_close.py        # 次足close予測用（ラベル生成用）
-├── secondary/                  # 2次モデル（ML予測＋フィルタリング）
+│   ├── atr_breakout.py        # ATRBreakoutStrategy
+│   ├── atr_mean_reversion.py  # ATRMeanReversionStrategy (Phase 2)
+│   ├── bollinger_breakout.py  # BollingerBreakoutStrategy (Phase 2)
+│   └── simple_close.py        # SimpleCloseStrategy (Phase 2)
+├── secondary/                  # 2次モデル（ドメインロジック）
 │   ├── __init__.py
 │   ├── base.py                # SecondaryModelBase抽象クラス
-│   ├── lightgbm_classifier.py
-│   ├── xgboost_classifier.py
-│   └── catboost_classifier.py
-├── utils/                      # ファクトリーと抽象化のみ
-│   ├── strategy_factory.py    # TwoTierStrategyとファクトリー
+│   ├── lightgbm_classifier.py # LightGBMClassifier
+│   ├── xgboost_classifier.py  # XGBoostClassifier (Phase 2)
+│   └── catboost_classifier.py # CatBoostClassifier (Phase 2)
+├── utils/                      # ヘルパークラス
+│   ├── strategy_factory.py    # StrategyFactory（戦略ロード用）
 │   ├── price_calculator.py    # 既存の価格計算器（後方互換性用）
 │   └── freqai_model_factory.py
-└── atr_ml_strategy.py         # Freqtradeエントリーポイント
+└── two_tier_strategy.py       # TwoTierStrategy(IStrategy) - Freqtradeエントリーポイント
 ```
 
 **ポイント**:
 
-- `primary/`: 具体的な1次戦略実装（util層から分離）
-- `secondary/`: 具体的な2次モデル実装（util層から分離）
-- `utils/`: ファクトリーと抽象基底クラスのみ（具体的な戦略実装なし）
+- `primary/`: 1次戦略のドメインロジック（IStrategyは**継承しない**）
+- `secondary/`: 2次モデルのドメインロジック（IStrategyは**継承しない**）
+- `utils/`: ファクトリーパターン実装（ヘルパークラス）
+- `two_tier_strategy.py`: **FreqtradeのIStrategyを継承**し、config駆動で1次戦略・2次モデルを切り替え
+
+**実行例**:
+```bash
+freqtrade backtesting --strategy TwoTierStrategy --config config.json
+```
 
 ### クラス設計
 
@@ -446,66 +476,111 @@ class LightGBMClassifier(SecondaryModelBase):
 #### TwoTierStrategy（統合クラス）
 
 ```python
-# utils/strategy_factory.py
-class TwoTierStrategy:
-    """2層戦略実行クラス
+# two_tier_strategy.py
+from freqtrade.strategy import IStrategy
+import pandas as pd
+from typing import Optional
 
-    1次戦略と2次モデルを統合
+class TwoTierStrategy(IStrategy):
+    """Config駆動の2層取引戦略（Freqtradeエントリーポイント）
+
+    FreqtradeのIStrategyを継承し、config.jsonで指定された
+    1次戦略と2次モデルを動的にロード・統合する
+
+    実行例:
+        freqtrade backtesting --strategy TwoTierStrategy --config config.json
     """
 
-    def __init__(
-        self,
-        primary_strategy: PrimaryStrategyBase,
-        secondary_model: Optional[SecondaryModelBase],
-        config: dict
-    ):
-        self.primary_strategy = primary_strategy
-        self.secondary_model = secondary_model
-        self.config = config
-        self.is_ml_enabled = secondary_model is not None
+    def __init__(self, config: dict):
+        super().__init__(config)
+        two_tier_config = config.get('two_tier_strategy', {})
+
+        # StrategyFactoryで1次戦略・2次モデルをロード
+        from user_data.strategies.utils.strategy_factory import StrategyFactory
+        self.primary_strategy = StrategyFactory.load_primary(two_tier_config)
+        self.secondary_model = StrategyFactory.load_secondary(two_tier_config)
+        self.is_ml_enabled = self.secondary_model is not None
 
         logger.info(
             f"TwoTierStrategy initialized: "
-            f"primary={type(primary_strategy).__name__}, "
-            f"secondary={type(secondary_model).__name__ if secondary_model else 'None'}"
+            f"primary={type(self.primary_strategy).__name__}, "
+            f"secondary={type(self.secondary_model).__name__ if self.secondary_model else 'None'}"
         )
 
-    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict, strategy) -> pd.DataFrame:
-        """指標計算（価格計算＋ML統合）"""
+    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """指標計算（価格計算＋ML統合）
+
+        1次戦略で指値価格を計算し、ML有効時はFreqAI予測を統合
+        """
         # 1次戦略: 指値価格計算
         dataframe = self.primary_strategy.calculate_prices(dataframe)
 
-        # 2次モデル: FreqAI統合（有効時のみ）
-        if self.is_ml_enabled and hasattr(strategy, 'freqai'):
-            dataframe = self.secondary_model.integrate_with_freqai(dataframe, metadata, strategy)
+        # 2次モデル: FreqAI統合（ML有効時のみ）
+        if self.is_ml_enabled:
+            dataframe = self.freqai.start(dataframe, metadata, self)
 
         return dataframe
 
-    def generate_labels(self, dataframe: pd.DataFrame) -> pd.Series:
-        """学習用ラベル生成
+    def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """エントリーシグナル生成
+
+        ML有効時: 予測=1の場合のみエントリー
+        ML無効時: 常にエントリー（指値価格があれば注文）
+        """
+        if self.is_ml_enabled:
+            # ML予測が1の場合のみエントリー
+            dataframe.loc[(dataframe['&-prediction'] == 1), 'enter_long'] = 1
+        else:
+            # ML無効時は常にエントリー
+            dataframe.loc[:, 'enter_long'] = 1
+
+        return dataframe
+
+    def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """エグジットシグナル生成（未実装）"""
+        return dataframe
+
+    def custom_entry_price(
+        self,
+        pair: str,
+        current_time,
+        proposed_rate: float,
+        entry_tag: Optional[str] = None,
+        **kwargs
+    ) -> float:
+        """エントリー指値価格（1次戦略の計算結果を使用）"""
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if len(dataframe) > 0:
+            return dataframe.iloc[-1]['buy_price']
+        return proposed_rate
+
+    def custom_exit_price(
+        self,
+        pair: str,
+        trade,
+        current_time,
+        proposed_rate: float,
+        **kwargs
+    ) -> float:
+        """エグジット指値価格（1次戦略の計算結果を使用）"""
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if len(dataframe) > 0:
+            return dataframe.iloc[-1]['sell_price']
+        return proposed_rate
+
+    def set_freqai_targets(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """FreqAI訓練用ラベル生成
 
         1次戦略のリターン計算結果をラベル化
+        リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）
         """
         # 1次戦略: リターン計算
         returns = self.primary_strategy.calculate_returns(dataframe)
 
         # リターン > 0 で成功ラベル
-        labels = (returns > 0).astype(int)
+        dataframe['&-target'] = (returns > 0).astype(int)
 
-        return labels
-
-    def should_enter_trade(self, dataframe: pd.DataFrame, index: int) -> bool:
-        """トレードエントリー判定
-
-        ML有効時: 予測=1の場合のみTrue
-        ML無効時: 常にTrue（指値価格があれば注文）
-        """
-        if self.is_ml_enabled:
-            # ML予測に基づく判定
-            return dataframe.loc[index, '&-prediction'] == 1
-        else:
-            # ML無効時は常に注文
-            return True
+        return dataframe
 ```
 
 #### ファクトリー
@@ -534,57 +609,57 @@ class StrategyFactory:
     }
 
     @classmethod
-    def create_two_tier_strategy(cls, config: dict) -> TwoTierStrategy:
-        """2層戦略の作成
+    def load_primary(cls, config: dict):
+        """1次戦略をロード
 
         Args:
-            config: 戦略設定
+            config: two_tier_strategy設定
 
         Returns:
-            設定済み2層戦略インスタンス
+            PrimaryStrategyBaseインスタンス
+
+        Raises:
+            ValueError: primary名が指定されていない場合
         """
         primary_name = config.get("primary")
-        secondary_name = config.get("secondary")
-
         if not primary_name:
             raise ValueError("primary strategy name is required")
 
-        # 1次戦略のロード
         primary_class = cls._load_class(cls._primary_strategies[primary_name])
         primary_params = config.get("primary_params", {})
-        primary_strategy = primary_class(primary_params)
+        return primary_class(primary_params)
 
-        # 2次モデルのロード（nullの場合はNone）
-        secondary_model = None
-        if secondary_name:
-            secondary_class = cls._load_class(cls._secondary_models[secondary_name])
-            secondary_params = config.get("secondary_params", {})
-            secondary_model = secondary_class(secondary_params)
+    @classmethod
+    def load_secondary(cls, config: dict):
+        """2次モデルをロード
 
-        return TwoTierStrategy(
-            primary_strategy=primary_strategy,
-            secondary_model=secondary_model,
-            config=config
-        )
+        Args:
+            config: two_tier_strategy設定
+
+        Returns:
+            SecondaryModelBaseインスタンス、またはNone（secondary=nullの場合）
+        """
+        secondary_name = config.get("secondary")
+        if not secondary_name:
+            return None
+
+        secondary_class = cls._load_class(cls._secondary_models[secondary_name])
+        secondary_params = config.get("secondary_params", {})
+        return secondary_class(secondary_params)
 
     @classmethod
     def _load_class(cls, class_path: str):
-        """モジュールパスからクラスをロード"""
+        """モジュールパスからクラスをロード
+
+        Args:
+            class_path: "module.path.ClassName"形式のクラスパス
+
+        Returns:
+            ロードされたクラス
+        """
         module_path, class_name = class_path.rsplit(".", 1)
         module = importlib.import_module(module_path)
         return getattr(module, class_name)
-
-    @classmethod
-    def register_primary_strategy(cls, name: str, class_path: str):
-        """新しい1次戦略を登録"""
-        cls._primary_strategies[name] = class_path
-        logger.info(f"Registered primary strategy: {name}")
-
-    @classmethod
-    def register_secondary_model(cls, name: str, class_path: str):
-        """新しい2次モデルを登録"""
-        cls._secondary_models[name] = class_path
-        logger.info(f"Registered secondary model: {name}")
 ```
 
 ### config.jsonの設計
@@ -763,10 +838,11 @@ def optimize_strategy_with_optuna(strategy_name: str, n_trials: int = 100):
   - FreqAI統合による予測データ取得
   - ML予測に基づく注文判定
 
-- ✅ **TwoTierStrategy統合クラス**
+- ✅ **TwoTierStrategy統合クラス（IStrategy継承）**
   - `populate_indicators()`: 価格計算とML統合
-  - `generate_labels()`: 学習用ラベル生成
-  - `should_enter_trade()`: エントリー判定
+  - `populate_entry_trend()` / `populate_exit_trend()`: エントリー/エグジットシグナル生成
+  - `custom_entry_price()` / `custom_exit_price()`: 指値価格設定
+  - `set_freqai_targets()`: FreqAI訓練用ラベル生成
 
 - ✅ **StrategyFactory基本機能**
   - 名前ベースの戦略/モデル選択
