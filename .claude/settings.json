@@ -80,12 +80,12 @@
         "DISABLE_AUTOUPDATER": "1",
         "DISABLE_MICROCOMPACT": "1"
     },
+    "autoCompactEnabled": false,
     "enableAllProjectMcpServers": false,
     "enabledMcpjsonServers": [
         "serena",
         "sequential-thinking",
-        "context7",
-        "vibe_kanban"
+        "context7"
     ],
     "statusLine": {
         "type": "command",
