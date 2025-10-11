@@ -98,28 +98,44 @@ def _generate_basic_price_signals(self, dataframe, metadata: Dict[str, Any]):
 
 ### richmanbtc概念との整合性
 
-richmanbtcチュートリアルの概念:
+**richmanbtcチュートリアルの核心概念**:
 
-- **1次モデル**: 指値注文戦略（価格計算＋信号生成を含む完全な戦略）
-- **2次モデル**: ML分類によるフィルタリング（1次モデルの信号を選別）
+- **1次モデル**: ATR指値戦略のリターン計算（約定シミュレーションによる理論リターン）
+- **2次モデル**: ML分類による成功予測（1次モデルのリターンがプラスになるかを予測）
 
-この概念に基づき、1次戦略は単なる価格計算器ではなく、価格計算と信号生成の両方を持つ完全な戦略として設計する。
+**本設計での実現方法**:
 
-**現在の実装状況**:
+- **学習フェーズ**: 1次モデルが計算したリターンをラベル化（リターン > 0 で成功/失敗）→ 2次モデルの訓練
+- **推論フェーズ（ML有効）**: 1次モデルの指値価格 + 2次モデルの予測 → 予測=1の場合のみ注文
+- **推論フェーズ（ML無効）**: 1次モデルの指値価格のみで注文（2次モデルの出力が常に1と同義）
 
-- ATR戦略（primary="atr_breakout" + secondary="lightgbm_classifier"）はrichmanbtcチュートリアルの再現が目的
-- 他の戦略の組み合わせも選択可能な設計
+### 動作モードの整理
 
-### 信号（ラベル）の定義
+#### モード1: 2次モデルOFF（ML無効）
+
+- **バックテスト/実取引**: 1次モデルの指値価格でそのまま注文
+- **学習**: なし（MLを使わないので学習不要）
+
+#### モード2: 2次モデルON（ML有効）
+
+- **学習フェーズ**:
+  - 1次モデルが計算した指値価格で注文執行した場合のリターンをラベル化
+  - テクニカル指標等の特徴量 → リターン成功/失敗の予測モデルを訓練
+- **バックテスト/実取引フェーズ**:
+  - 1次モデル: 指値価格計算
+  - 2次モデル: ML予測（0 or 1）
+  - 最終判断: 予測=1の場合のみ、1次モデルの指値価格で注文
+
+### 学習ラベルの定義
 
 **2次モデル（ML）の学習ラベル**:
 
-指値注文が執行されたときに、その取引価格を起点とした利益がプラスかマイナスかの2値分類を基本とする:
+1次モデルが計算した指値価格で注文を執行した場合のリターンに基づく2値分類:
 
-- **ラベル = 1**: 指値注文が執行された後、利益がプラスになる取引
+- **ラベル = 1**: 指値注文が執行され、利益がプラスになる取引
 - **ラベル = 0**: 指値注文が執行されても損失になる、または執行されない取引
 
-**ラベル生成の2つのアプローチ**:
+**約定シミュレーション方法（configで選択可能）**:
 
 richmanbtcチュートリアルでは、以下の2通りの約定シミュレーション方法が提示されている:
 
@@ -228,34 +244,42 @@ import pandas as pd
 class PrimaryStrategyBase(ABC):
     """1次戦略の抽象基底クラス
 
-    価格計算と信号生成の両方を担当する完全な戦略
+    指値価格計算とリターン計算を担当
     """
 
     def __init__(self, params: dict):
         self.params = params
+        self.execution_mode = params.get("execution_mode", "one_candle")  # "chase" or "one_candle"
 
     @abstractmethod
     def calculate_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        """価格計算（buy_price, sell_priceカラムを追加）
+        """指値価格計算（buy_price, sell_priceカラムを追加）
 
         Args:
             dataframe: OHLCデータ
 
         Returns:
             buy_price, sell_priceが追加されたDataFrame
+
+        Note:
+            - ML有効/無効に関わらず常に実行される
+            - 計算された指値価格は注文執行とML学習の両方で使用される
         """
         pass
 
     @abstractmethod
-    def generate_signals(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """エントリー信号生成（enter_long, enter_shortカラムを追加）
+    def calculate_returns(self, dataframe: pd.DataFrame) -> pd.Series:
+        """指値戦略のリターン計算（ML学習用ラベル生成）
 
         Args:
             dataframe: 価格計算済みのDataFrame
-            metadata: ペア情報
 
         Returns:
-            enter_long, enter_shortが追加されたDataFrame
+            各行の理論リターン（約定シミュレーション結果）
+
+        Note:
+            - execution_mode設定に基づいて約定シミュレーション方法を切り替え
+            - 計算されたリターンは、ML学習時にラベル化される（リターン > 0 で成功）
         """
         pass
 ```
@@ -263,13 +287,15 @@ class PrimaryStrategyBase(ABC):
 ```python
 # primary/atr_breakout.py
 class ATRBreakoutStrategy(PrimaryStrategyBase):
-    """ATR価格計算＋ブレイクアウト信号生成戦略"""
+    """ATR指値戦略（richmanbtcチュートリアルの実装）"""
 
     def __init__(self, params: dict):
         super().__init__(params)
         self.period = params.get("period", 14)
         self.multiplier = params.get("multiplier", 0.5)
-        self.lookback = params.get("lookback", 1)
+        # 以下のパラメータはconfigから取得
+        self.fee = params.get("fee", 0.00025)
+        self.hold_periods = params.get("hold_periods", 24)
 
     def calculate_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
         """ATRベースの指値価格計算"""
@@ -283,33 +309,35 @@ class ATRBreakoutStrategy(PrimaryStrategyBase):
 
         return dataframe
 
-    def generate_signals(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """価格ブレイクアウト信号生成
+    def calculate_returns(self, dataframe: pd.DataFrame) -> pd.Series:
+        """指値戦略のリターン計算（約定シミュレーション）
 
-        前期間の指値価格に現在価格が到達した場合に信号を生成
+        Warning:
+            このロジックは取引の根幹となるため、ミスがあると大きな損失に繋がる
+            必ず包括的なテストコードで検証すること（tests/primary/test_atr_breakout.py）
         """
-        dataframe["enter_long"] = 0
-        dataframe["enter_short"] = 0
+        if self.execution_mode == "chase":
+            return self._calculate_chase_returns(dataframe)
+        else:  # one_candle
+            return self._calculate_one_candle_returns(dataframe)
 
-        if len(dataframe) <= self.lookback:
-            return dataframe
+    def _calculate_chase_returns(self, dataframe: pd.DataFrame) -> pd.Series:
+        """アプローチ1: エントリー追いかけ型の約定シミュレーション
 
-        # 前期間の指値価格
-        prev_buy_price = dataframe["buy_price"].shift(self.lookback)
-        prev_sell_price = dataframe["sell_price"].shift(self.lookback)
-        current_close = dataframe["close"]
+        richmanbtcチュートリアルの約定シミュレーション例1に対応
+        """
+        # Force Entry Price計算と手数料を考慮したリターン計算
+        # 実装詳細は省略（実際の実装時に記述）
+        pass
 
-        # ブレイクアウト条件
-        buy_signal = (current_close <= prev_buy_price) & (prev_buy_price > 0)
-        sell_signal = (current_close >= prev_sell_price) & (prev_sell_price > 0)
+    def _calculate_one_candle_returns(self, dataframe: pd.DataFrame) -> pd.Series:
+        """アプローチ2: エントリー1足限定型の約定シミュレーション（推奨）
 
-        # 価格有効性チェック
-        price_valid = (dataframe["buy_price"] > 0) & (dataframe["sell_price"] > 0)
-
-        dataframe.loc[buy_signal & price_valid, "enter_long"] = 1
-        dataframe.loc[sell_signal & price_valid, "enter_short"] = 1
-
-        return dataframe
+        richmanbtcチュートリアルの約定シミュレーション例2に対応
+        """
+        # 次足での約定判定と手数料を考慮したリターン計算
+        # 実装詳細は省略（実際の実装時に記述）
+        pass
 ```
 
 ```python
@@ -331,18 +359,11 @@ class SimpleCloseStrategy(PrimaryStrategyBase):
         dataframe["sell_price"] = dataframe["close"]
         return dataframe
 
-    def generate_signals(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """次足closeの上げ下げで信号生成"""
-        dataframe["enter_long"] = 0
-        dataframe["enter_short"] = 0
-
+    def calculate_returns(self, dataframe: pd.DataFrame) -> pd.Series:
+        """次足のclose変化率を返す（シンプルな学習用）"""
         # 次足のclose変化率
         future_return = dataframe["close"].pct_change().shift(-1)
-
-        dataframe.loc[future_return > self.threshold, "enter_long"] = 1
-        dataframe.loc[future_return < -self.threshold, "enter_short"] = 1
-
-        return dataframe
+        return future_return
 ```
 
 #### 2次モデル（Secondary Model）
@@ -429,7 +450,7 @@ class LightGBMClassifier(SecondaryModelBase):
 class TwoTierStrategy:
     """2層戦略実行クラス
 
-    1次戦略と2次モデルを統合して信号を生成
+    1次戦略と2次モデルを統合
     """
 
     def __init__(
@@ -451,7 +472,7 @@ class TwoTierStrategy:
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict, strategy) -> pd.DataFrame:
         """指標計算（価格計算＋ML統合）"""
-        # 1次戦略: 価格計算
+        # 1次戦略: 指値価格計算
         dataframe = self.primary_strategy.calculate_prices(dataframe)
 
         # 2次モデル: FreqAI統合（有効時のみ）
@@ -460,19 +481,31 @@ class TwoTierStrategy:
 
         return dataframe
 
-    def generate_entry_signals(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """エントリー信号生成
+    def generate_labels(self, dataframe: pd.DataFrame) -> pd.Series:
+        """学習用ラベル生成
 
-        1次戦略で信号生成し、2次モデルでフィルタリング
+        1次戦略のリターン計算結果をラベル化
         """
-        # 1次戦略: 信号生成
-        signals = self.primary_strategy.generate_signals(dataframe, metadata)
+        # 1次戦略: リターン計算
+        returns = self.primary_strategy.calculate_returns(dataframe)
 
-        # 2次モデル: MLフィルタリング（有効時のみ）
+        # リターン > 0 で成功ラベル
+        labels = (returns > 0).astype(int)
+
+        return labels
+
+    def should_enter_trade(self, dataframe: pd.DataFrame, index: int) -> bool:
+        """トレードエントリー判定
+
+        ML有効時: 予測=1の場合のみTrue
+        ML無効時: 常にTrue（指値価格があれば注文）
+        """
         if self.is_ml_enabled:
-            signals = self.secondary_model.filter_signals(dataframe, signals, self.config)
-
-        return signals
+            # ML予測に基づく判定
+            return dataframe.loc[index, '&-prediction'] == 1
+        else:
+            # ML無効時は常に注文
+            return True
 ```
 
 #### ファクトリー
@@ -556,7 +589,7 @@ class StrategyFactory:
 
 ### config.jsonの設計
 
-#### 基本形式（2層戦略）
+#### 基本形式（2層戦略：ML有効）
 
 ```json
 {
@@ -566,7 +599,9 @@ class StrategyFactory:
     "primary_params": {
       "period": 14,
       "multiplier": 0.5,
-      "lookback": 1
+      "execution_mode": "one_candle",
+      "fee": 0.00025,
+      "hold_periods": 24
     },
     "secondary_params": {
       "confidence_threshold": 0.6
@@ -574,13 +609,13 @@ class StrategyFactory:
   },
   "freqai": {
     "enabled": true,
-    "identifier": "atr_lightgbm_v1",
+    "identifier": "atr_lightgbm_v1"
     // ... FreqAI設定 ...
   }
 }
 ```
 
-#### 1次モデルのみ（secondary=null）
+#### 1次モデルのみ（ML無効：secondary=null）
 
 ```json
 {
@@ -590,7 +625,9 @@ class StrategyFactory:
     "primary_params": {
       "period": 14,
       "multiplier": 0.5,
-      "lookback": 1
+      "execution_mode": "one_candle",
+      "fee": 0.00025,
+      "hold_periods": 24
     }
   },
   "freqai": {
@@ -702,21 +739,95 @@ def optimize_strategy_with_optuna(strategy_name: str, n_trials: int = 100):
 - config.jsonで戦略を指定すれば、その戦略のパラメータ空間が自動的に使用される
 - 新しい戦略を追加しても、Optuna最適化ロジックの変更は不要
 
+## Phase 1実装範囲
+
+### 実装するもの
+
+#### 必須実装
+
+- ✅ **PrimaryStrategyBase抽象クラス**
+  - `calculate_prices()`: 指値価格計算
+  - `calculate_returns()`: リターン計算（学習用ラベル生成）
+  - `execution_mode`パラメータによる約定シミュレーション方法の切り替え
+
+- ✅ **ATRBreakoutStrategy実装**
+  - ATR指値価格計算
+  - 2つの約定シミュレーション方法（chase / one_candle）
+  - configからのパラメータ取得（fee, hold_periods, execution_mode等）
+
+- ✅ **SecondaryModelBase抽象クラス**
+  - `integrate_with_freqai()`: FreqAI統合
+  - `filter_signals()`: ML予測によるフィルタリング
+
+- ✅ **LightGBMClassifier実装**
+  - FreqAI統合による予測データ取得
+  - ML予測に基づく注文判定
+
+- ✅ **TwoTierStrategy統合クラス**
+  - `populate_indicators()`: 価格計算とML統合
+  - `generate_labels()`: 学習用ラベル生成
+  - `should_enter_trade()`: エントリー判定
+
+- ✅ **StrategyFactory基本機能**
+  - 名前ベースの戦略/モデル選択
+  - configからのインスタンス生成
+
+- ✅ **config.json設定**
+  - ML有効/無効の切り替え（secondary=null）
+  - 約定シミュレーション方法の選択（execution_mode）
+  - パラメータのconfig管理（fee, hold_periods等）
+
+#### テスト要件
+
+- ✅ **約定シミュレーションロジックの包括的テスト**
+  - `tests/primary/test_atr_breakout.py`
+  - chase / one_candle両方の動作検証
+  - エッジケースの検証（データ不足、価格異常等）
+  - 手数料計算の正確性検証
+  - リターン計算の精度検証
+
+### 実装しないもの（Phase 2へ延期）
+
+- ❌ **他の1次戦略実装**
+  - atr_mean_reversion
+  - bollinger_breakout
+  - simple_close（ラベル生成用）
+
+- ❌ **他の2次モデル実装**
+  - xgboost_classifier
+  - catboost_classifier
+
+- ❌ **高度な機能**
+  - Optuna最適化機能
+  - 動的な戦略登録機能
+  - パラメータ空間定義（PARAM_SPACE）
+
+- ❌ **複雑な設定管理**
+  - プリセット機能
+  - バリデーション機能
+
+### Phase 1完了条件
+
+1. ATR戦略のみで、ML有効/無効両方の動作確認
+2. 約定シミュレーション方法（chase / one_candle）の切り替え動作確認
+3. 包括的なテストによる約定ロジックの正確性保証
+4. richmanbtc概念（1次リターン計算 → 2次ML予測）の忠実な実装確認
+
 ## 実装タイミング
 
-### Phase 2以降で実装すべき理由
+### Phase 2以降で実装予定
 
 1. **Phase 1の目標達成を優先**
    - 現在のリファクタリング目標: ML統合ロジックの分離と品質向上
-   - 基本戦略の抽象化は追加スコープ
+   - ATR戦略の完全な実装と検証
 
 2. **要件の明確化が必要**
    - どのような戦略バリエーションが必要か、実運用での経験が必要
    - 過度な抽象化を避け、実際のニーズに基づいた設計が望ましい
 
 3. **段階的な改善の方針**
-   - Phase 1: 基本機能の安定化（現在のリファクタリング完了）
-   - Phase 2: ハイパーパラメータ最適化とアーキテクチャ改善
+   - Phase 1: 基本機能の安定化（ATR戦略とML統合）
+   - Phase 2: ハイパーパラメータ最適化とアーキテクチャ改善（他戦略追加）
    - Phase 3: 性能検証と最終統合
 
 ## 具体的な実装ステップ（Phase 2以降）
@@ -762,6 +873,86 @@ mkdir -p user_data/strategies/secondary
 2. 統合テスト（2層戦略全体）
 3. 新戦略追加ガイドのドキュメント化
 4. マイグレーションガイドの作成
+
+## テスト要件
+
+### 重要性
+
+約定シミュレーションロジックは取引の根幹となるため、**ミスがあると大きな損失に繋がる**。Phase 1実装時に包括的なテストコードを必ず用意すること。
+
+### テスト対象
+
+#### 1. 約定シミュレーションロジック（最重要）
+
+**ファイル**: `tests/primary/test_atr_breakout.py`
+
+**テスト項目**:
+
+- ✅ **chase方式の動作検証**
+  - Force Entry Price（FEP）計算の正確性
+  - 追いかけ型約定シミュレーションの正確性
+  - 手数料計算の正確性
+
+- ✅ **one_candle方式の動作検証**
+  - 次足での約定判定の正確性
+  - 約定しない場合のリターン=0の確認
+  - 手数料計算の正確性
+
+- ✅ **エッジケースの検証**
+  - データ不足時の挙動（最初の数行）
+  - 価格異常時の挙動（0以下の価格等）
+  - NaN/Infの適切な処理
+
+- ✅ **リターン計算の精度検証**
+  - 既知のデータでの期待値との比較
+  - richmanbtcチュートリアルのサンプルデータでの検証
+  - 手数料の影響確認
+
+#### 2. ラベル生成ロジック
+
+**ファイル**: `tests/utils/test_two_tier_strategy.py`
+
+**テスト項目**:
+
+- ✅ リターン > 0 で成功ラベル（1）
+- ✅ リターン <= 0 で失敗ラベル（0）
+- ✅ execution_mode切り替え時のラベル変化確認
+
+#### 3. ML統合ロジック
+
+**ファイル**: `tests/secondary/test_lightgbm_classifier.py`
+
+**テスト項目**:
+
+- ✅ FreqAI予測データの正常取得
+- ✅ ML予測に基づくエントリー判定の正確性
+- ✅ ML無効時の常時True動作確認
+
+#### 4. 統合テスト
+
+**ファイル**: `tests/integration/test_atr_ml_strategy.py`
+
+**テスト項目**:
+
+- ✅ ML有効時のエンドツーエンド動作
+- ✅ ML無効時のエンドツーエンド動作
+- ✅ execution_mode切り替え時の動作確認
+
+### テストデータ
+
+**サンプルデータ**:
+
+- richmanbtcチュートリアルのサンプルデータ使用
+- 既知の結果を持つ合成データでの検証
+- 実際の市場データでの妥当性確認
+
+### テスト実行基準
+
+**Phase 1完了条件**:
+
+- 全テストケースがパス
+- カバレッジ80%以上
+- エッジケース含む包括的な検証完了
 
 ## 利点
 
