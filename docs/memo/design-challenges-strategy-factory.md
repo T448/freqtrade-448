@@ -40,39 +40,6 @@
 
 ## 現状の実装
 
-### 設定構造（config.json）
-
-現在のFreqtrade設定では、2層戦略の設定は以下のように構造化されている:
-
-```json
-{
-  "two_tier_strategy": {
-    "preset": "price_only",
-    "primary_model": {
-      "type": "atr",
-      "params": {
-        "period": 14,
-        "multiplier": 0.5
-      }
-    },
-    "secondary_model": {
-      "enabled": false,
-      "confidence_threshold": 0.6
-    }
-  },
-  "freqai": {
-    "enabled": false,
-    // ... FreqAI設定 ...
-  }
-}
-```
-
-**設定の特徴**:
-
-- `preset`: 事前定義された戦略設定（`price_only`, `default`等）を選択可能
-- `primary_model`: 1次モデル（価格計算）の選択とパラメータ設定
-- `secondary_model`: 2次モデル（ML）の有効/無効とパラメータ設定
-
 ### 問題箇所
 
 **ファイル**: `user_data/strategies/utils/strategy_factory.py:417-453`
@@ -97,9 +64,9 @@ def _generate_basic_price_signals(self, dataframe, metadata: Dict[str, Any]):
    - ML無効時の戦略を変更する場合、`TwoTierStrategy`クラスを直接修正する必要がある
    - 新しい戦略を追加する際の柔軟性が低い
 
-3. **設定との不整合**
-   - `config.json`では`primary_model`の価格計算器を選択可能だが、信号生成戦略は選択できない
-   - `secondary_model.enabled=false`の場合、常に価格ブレイクアウト戦略が使用される
+3. **設定の柔軟性不足**
+   - 1次戦略と2次モデルを独立して選択できない
+   - 戦略の組み合わせを変更する際にコード修正が必要
 
 ## 設計原則
 
@@ -441,14 +408,24 @@ class SecondaryModelBase(ABC):
 ```python
 # secondary/lightgbm_classifier.py
 class LightGBMClassifier(SecondaryModelBase):
-    """LightGBM二値分類モデル"""
+    """LightGBM二値分類モデル（SecondaryModelBaseラッパー）
+
+    FreqAIモデル（TwoTierLightGBMClassifier）のラッパーとして機能し、
+    TwoTierStrategyからの呼び出しをFreqAIフレームワークに橋渡しする
+    """
 
     def __init__(self, params: dict):
         super().__init__(params)
         self.confidence_threshold = params.get("confidence_threshold", 0.6)
 
     def integrate_with_freqai(self, dataframe: pd.DataFrame, metadata: dict, strategy) -> pd.DataFrame:
-        """FreqAI統合でLightGBM予測を取得"""
+        """FreqAI統合でLightGBM予測を取得
+
+        Note:
+            - strategy.freqai.start()はFreqAIフレームワークのエントリーポイント
+            - 内部でTwoTierLightGBMClassifier(BaseClassifierModel)が呼び出される
+            - &-predictionカラムに予測結果（0 or 1）が追加される
+        """
         # FreqAIのstart()を呼び出して予測データを取得
         dataframe = strategy.freqai.start(dataframe, metadata, strategy)
         return dataframe
@@ -473,6 +450,167 @@ class LightGBMClassifier(SecondaryModelBase):
         return signals
 ```
 
+### FreqAI統合アーキテクチャ
+
+#### 全体構成
+
+```
+TwoTierStrategy(IStrategy) ← Freqtradeエントリーポイント
+├── PrimaryStrategyBase (例: ATRBreakoutStrategy)
+│   ├── calculate_prices() → buy_price, sell_price
+│   └── calculate_returns() → ラベル生成用リターン計算
+│
+└── SecondaryModelBase (例: LightGBMClassifier) ← ラッパー層
+    └── FreqAIフレームワーク経由で呼び出し
+        └── TwoTierLightGBMClassifier(BaseClassifierModel) ← 実際のMLモデル
+            ├── populate_indicators() → 特徴量生成
+            ├── set_freqai_targets() → ラベル生成（TwoTierStrategyから呼ばれる）
+            ├── fit() → モデル訓練
+            └── predict() → 予測実行
+```
+
+#### SecondaryModelBaseの役割
+
+`SecondaryModelBase`（例: `LightGBMClassifier`）は、FreqAIモデルの**ラッパー**として機能します：
+
+1. **FreqAI統合の橋渡し**
+   - `TwoTierStrategy`からの呼び出しをFreqAIフレームワークに転送
+   - `strategy.freqai.start()`を呼び出して予測データを取得
+
+2. **予測結果のフィルタリング**
+   - FreqAIから返された`&-prediction`カラムを使用
+   - エントリーシグナルのフィルタリングロジックを提供
+
+#### FreqAIモデルの実装場所
+
+実際のMLモデルは、**FreqAIモデルとして別途実装**します。
+1次戦略と2次モデルは独立して選択可能なため、FreqAIモデル名は2次モデルの種類のみを反映します。
+
+**実装場所**: `user_data/freqaimodels/two_tier_lightgbm_classifier.py`
+
+```python
+# user_data/freqaimodels/two_tier_lightgbm_classifier.py
+from freqtrade.freqai.base_models.BaseClassifierModel import BaseClassifierModel
+
+class TwoTierLightGBMClassifier(BaseClassifierModel):
+    """2層戦略用LightGBM二値分類モデル（FreqAIモデル本体）
+
+    FreqAIフレームワークのBaseClassifierModelを継承し、
+    任意の1次戦略と組み合わせ可能な汎用的なML実装を提供
+
+    Note:
+        - 1次戦略（ATRBreakout, MeanReversion等）とは独立
+        - configで1次戦略と2次モデルを自由に組み合わせ可能
+    """
+
+    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """特徴量生成（テクニカル指標等）
+
+        Returns:
+            %で始まる特徴量カラムが追加されたDataFrame
+        """
+        # 移動平均、RSI、MACD等のテクニカル指標を計算
+        # 1次戦略に依存しない汎用的な特徴量
+        # ...
+        return dataframe
+
+    def set_freqai_targets(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """訓練用ラベル生成
+
+        TwoTierStrategy.set_freqai_targets()から間接的に呼ばれる
+
+        Note:
+            実際のラベル生成はTwoTierStrategyで実装されるため、
+            このメソッドは空または最小限の実装
+        """
+        return dataframe
+```
+
+**Phase 2で追加される他のFreqAIモデル例**:
+
+- `user_data/freqaimodels/two_tier_xgboost_classifier.py` - XGBoost実装
+- `user_data/freqaimodels/two_tier_catboost_classifier.py` - CatBoost実装
+
+#### ラベル生成フロー
+
+ML学習時のラベル生成は以下のフローで行われます：
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 1. FreqAIフレームワークが訓練開始                  │
+│    - TwoTierStrategy.set_freqai_targets()を呼び出し│
+└─────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────┐
+│ 2. TwoTierStrategy.set_freqai_targets()             │
+│    - primary_strategy.calculate_returns()を実行     │
+│    - リターン計算結果をラベル化                     │
+│      labels = (returns > 0).astype(int)             │
+│    - dataframe['&-target'] = labels                 │
+└─────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────┐
+│ 3. FreqAIがラベル付きデータで訓練実行              │
+│    - TwoTierLightGBMClassifier.fit()                │
+│    - 特徴量（テクニカル指標）→ ラベル（0/1）      │
+└─────────────────────────────────────────────────────┘
+```
+
+**実装例（TwoTierStrategy内）**:
+
+```python
+def set_freqai_targets(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+    """FreqAI訓練用ラベル生成
+
+    1次戦略のリターン計算結果をラベル化し、FreqAIに渡す
+    どの1次戦略と組み合わせても動作する汎用的な実装
+    """
+    # 1次戦略でリターン計算（約定シミュレーション）
+    # ATRBreakout、MeanReversion等、任意の1次戦略が使用可能
+    returns = self.primary_strategy.calculate_returns(dataframe)
+
+    # リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）
+    dataframe['&-target'] = (returns > 0).astype(int)
+
+    return dataframe
+```
+
+#### Config設定での組み合わせ例
+
+`config.json`で1次戦略と2次モデルを独立して指定します：
+
+```json
+{
+  "two_tier_strategy": {
+    "primary": "atr_breakout",           // 1次戦略: ATRBreakout
+    "secondary": "lightgbm_classifier"   // 2次モデル: LightGBM
+  },
+  "freqai": {
+    "enabled": true,
+    "model_name": "TwoTierLightGBMClassifier",  // FreqAIモデル
+    "model_training_parameters": {
+      "n_estimators": 100,
+      "learning_rate": 0.1
+    }
+  }
+}
+```
+
+**別の組み合わせ例（Phase 2以降）**:
+
+```json
+{
+  "two_tier_strategy": {
+    "primary": "bollinger_breakout",      // 1次戦略を変更
+    "secondary": "xgboost_classifier"     // 2次モデルも変更
+  },
+  "freqai": {
+    "enabled": true,
+    "model_name": "TwoTierXGBoostClassifier"  // 対応するFreqAIモデル
+  }
+}
+```
+
 #### TwoTierStrategy（統合クラス）
 
 ```python
@@ -494,6 +632,24 @@ class TwoTierStrategy(IStrategy):
     def __init__(self, config: dict):
         super().__init__(config)
         two_tier_config = config.get('two_tier_strategy', {})
+        freqai_config = config.get('freqai', {})
+
+        # Config validation: freqai.enabled and secondary must be consistent
+        freqai_enabled = freqai_config.get('enabled', False)
+        has_secondary = two_tier_config.get('secondary') is not None
+
+        if has_secondary and not freqai_enabled:
+            raise ValueError(
+                "Invalid configuration: secondary model is specified but freqai.enabled is False. "
+                "Please set freqai.enabled=true when using a secondary model."
+            )
+
+        if freqai_enabled and not has_secondary:
+            logger.warning(
+                "freqai.enabled=true but no secondary model specified. "
+                "FreqAI will be enabled but predictions will not be used for filtering. "
+                "Consider setting secondary to a model name (e.g., 'lightgbm_classifier') or disabling FreqAI."
+            )
 
         # StrategyFactoryで1次戦略・2次モデルをロード
         from user_data.strategies.utils.strategy_factory import StrategyFactory
@@ -504,7 +660,8 @@ class TwoTierStrategy(IStrategy):
         logger.info(
             f"TwoTierStrategy initialized: "
             f"primary={type(self.primary_strategy).__name__}, "
-            f"secondary={type(self.secondary_model).__name__ if self.secondary_model else 'None'}"
+            f"secondary={type(self.secondary_model).__name__ if self.secondary_model else 'None'}, "
+            f"freqai_enabled={freqai_enabled}"
         )
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
