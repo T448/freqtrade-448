@@ -7,6 +7,11 @@ Phase 3: ML無効モード対応（基本統合）
 - 1次戦略で価格計算のみ実行
 - 常時エントリー戦略（ML予測なし）
 - カスタム指値価格による注文
+
+Phase 4: ML有効モード対応（FreqAI統合）
+- Buy/Sell独立したFreqAIモデル予測
+- ML予測に基づくエントリー/エグジット判定
+- 1次戦略のリターン計算に基づくラベル生成
 """
 
 import logging
@@ -93,36 +98,46 @@ class TwoTierStrategy(IStrategy):
         )
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """指標計算（Phase 3: ML無効モード - 価格計算のみ）
+        """指標計算（価格計算 + ML予測統合）
 
-        1次戦略で指値価格（buy_price, sell_price）を計算する
-        ML有効時の予測統合はPhase 4で実装
+        1次戦略で指値価格（buy_price, sell_price）を計算し、
+        ML有効時はBuy/Sell独立したFreqAI予測を統合する
 
         Args:
             dataframe: OHLCV価格データ
             metadata: ペア情報等のメタデータ
 
         Returns:
-            buy_price, sell_priceカラムが追加されたDataFrame
+            buy_price, sell_priceカラム + ML予測カラムが追加されたDataFrame
         """
         # 1次戦略: 指値価格計算
         dataframe = self.primary_strategy.calculate_prices(dataframe)
 
-        # TODO Phase 4: FreqAI予測の統合
-        # if self.is_ml_enabled:
-        #     dataframe = self.freqai_buy.start(dataframe, metadata, self)
-        #     dataframe.rename(columns={'&-prediction': '&-prediction_buy'}, inplace=True)
-        #
-        #     dataframe = self.freqai_sell.start(dataframe, metadata, self)
-        #     dataframe.rename(columns={'&-prediction': '&-prediction_sell'}, inplace=True)
+        # FreqAI予測の統合（ML有効時のみ）
+        if self.is_ml_enabled:
+            # FreqAIモデルの特徴量生成 + 予測実行
+            dataframe = self.freqai.start(dataframe, metadata, self)
+
+            # &-prediction カラムを &-prediction_buy にリネーム
+            if "&-prediction" in dataframe.columns:
+                dataframe["&-prediction_buy"] = dataframe["&-prediction"]
+                dataframe.drop(columns=["&-prediction"], inplace=True)
+
+            # Note: マルチターゲット設定の場合、freqai_buy/freqai_sellとして
+            # 2つの独立したFreqAIインスタンスを使用する
+            # 現在はシングルモデル実装（Phase 4基本版）
+            # Buy予測をSellにもコピー（同じモデルを使用）
+            if "&-prediction_buy" in dataframe.columns:
+                dataframe["&-prediction_sell"] = dataframe["&-prediction_buy"]
 
         return dataframe
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """エントリーシグナル生成（Phase 3: ML無効モード - 常時エントリー）
+        """エントリーシグナル生成（ML予測による判定）
 
-        ML無効時は常に両方向エントリー（指値価格があれば注文）
         両建て対応: buy/sellを独立して判定
+        - ML有効時: 各方向の予測=1の場合のみエントリー
+        - ML無効時: 常に両方向エントリー（指値価格があれば注文）
 
         Args:
             dataframe: 指標計算済みDataFrame
@@ -132,26 +147,26 @@ class TwoTierStrategy(IStrategy):
             enter_long, enter_shortシグナルが設定されたDataFrame
         """
         if self.is_ml_enabled:
-            # TODO Phase 4: ML予測による判定
-            # dataframe.loc[(dataframe['&-prediction_buy'] == 1), 'enter_long'] = 1
-            # dataframe.loc[(dataframe['&-prediction_sell'] == 1), 'enter_short'] = 1
-            pass
+            # ML予測が1の場合のみエントリー（buy/sell独立）
+            dataframe.loc[(dataframe["&-prediction_buy"] == 1), "enter_long"] = 1
+            dataframe.loc[(dataframe["&-prediction_sell"] == 1), "enter_short"] = 1
         else:
             # ML無効時は常に両方向エントリー（価格が有効な場合）
             # 価格有効性チェック: buy_price/sell_price > 0
             dataframe.loc[(dataframe["buy_price"] > 0), "enter_long"] = 1
-
             dataframe.loc[(dataframe["sell_price"] > 0), "enter_short"] = 1
 
         return dataframe
 
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """エグジットシグナル生成
+        """エグジットシグナル生成（ML予測による決済）
 
-        Phase 3では明示的な決済シグナルは生成しない
-        ROI/Stoplossによる自動決済のみ
+        ML予測に基づく明示的な決済シグナル生成。
+        Freqtradeは反対売買による自動決済をサポートしていないため、
+        exit_long/exit_short で明示的に決済指示が必要。
 
-        Phase 4でML予測に基づく決済シグナルを実装予定
+        両建て状態（long + short 同時保有）では、両方のexitシグナルが
+        同時に発生する可能性があり、その場合Freqtradeは両ポジションを決済する。
 
         Args:
             dataframe: 指標計算済みDataFrame
@@ -160,11 +175,14 @@ class TwoTierStrategy(IStrategy):
         Returns:
             exit_long, exit_shortシグナルが設定されたDataFrame
         """
-        # Phase 3では明示的な決済シグナルなし
-        # TODO Phase 4: ML予測による決済
-        # if self.is_ml_enabled:
-        #     dataframe.loc[(dataframe['&-prediction_sell'] == 1), 'exit_long'] = 1
-        #     dataframe.loc[(dataframe['&-prediction_buy'] == 1), 'exit_short'] = 1
+        if self.is_ml_enabled:
+            # ロング決済: sell予測=1の場合
+            dataframe.loc[(dataframe["&-prediction_sell"] == 1), "exit_long"] = 1
+
+            # ショート決済: buy予測=1の場合
+            dataframe.loc[(dataframe["&-prediction_buy"] == 1), "exit_short"] = 1
+
+        # ML無効時は明示的な決済シグナルなし（ROI/Stoplossのみ）
 
         return dataframe
 
@@ -233,19 +251,39 @@ class TwoTierStrategy(IStrategy):
         logger.debug(f"Using proposed_rate for {pair}: {proposed_rate}")
         return proposed_rate
 
-    # TODO Phase 4: FreqAIラベル生成実装
-    # def set_freqai_targets(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-    #     """FreqAI訓練用ラベル生成
-    #
-    #     1次戦略のリターン計算結果をラベル化
-    #     buy/sell独立したラベルを生成（両建て対応）
-    #     リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）
-    #     """
-    #     # 1次戦略: buy/sellそれぞれのリターン計算
-    #     buy_return, sell_return = self.primary_strategy.calculate_returns(dataframe)
-    #
-    #     # リターン > 0 で成功ラベル
-    #     dataframe['&-target_buy'] = (buy_return > 0).astype(int)
-    #     dataframe['&-target_sell'] = (sell_return > 0).astype(int)
-    #
-    #     return dataframe
+    def set_freqai_targets(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """FreqAI訓練用ラベル生成
+
+        1次戦略のリターン計算結果をラベル化する。
+        buy/sell独立したラベルを生成（両建て対応）。
+        リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）。
+
+        Args:
+            dataframe: 指標計算済みDataFrame
+            metadata: ペア情報
+
+        Returns:
+            &-targetカラムが追加されたDataFrame
+
+        Note:
+            - 1次戦略のcalculate_returns()で約定シミュレーションを実行
+            - execution_mode (chase/one_candle) に応じて異なるラベルが生成される
+            - FreqAIフレームワークが&-targetカラムを訓練ラベルとして使用
+        """
+        # 1次戦略: buy/sellそれぞれのリターン計算
+        buy_return, sell_return = self.primary_strategy.calculate_returns(dataframe)
+
+        # リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）
+        # 現在はシングルモデル実装のため、buyラベルのみ使用
+        # マルチターゲット実装時はidentifierで判定する
+        dataframe["&-target"] = (buy_return > 0).astype(int)
+
+        # デバッグ用: ラベル分布をログ出力
+        positive_ratio = dataframe["&-target"].mean()
+        logger.info(
+            f"Label generation for {metadata.get('pair', 'unknown')}: "
+            f"positive_ratio={positive_ratio:.3f}, "
+            f"total_samples={len(dataframe)}"
+        )
+
+        return dataframe
