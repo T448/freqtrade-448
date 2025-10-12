@@ -9,6 +9,180 @@
 - **Phase**: Phase 1（基本実装）
 - **最終更新**: 2025-10-11
 
+## 📋 推奨実装順序
+
+以下の順序で実装することで、依存関係を満たしつつ段階的に検証できます。
+
+### Phase 1: コア戦略実装 (1-2日) 🔴 最優先
+
+**目的**: 1次戦略の基本実装とテスト
+
+**実装項目**:
+1. ディレクトリ構造作成
+   - `user_data/strategies/primary/` 作成
+   - `user_data/strategies/primary/__init__.py` 作成
+2. PrimaryStrategyBase抽象クラス実装
+   - `calculate_prices()` / `calculate_returns()` インターフェース定義
+3. ATRBreakoutStrategy実装
+   - ATR計算、指値価格計算
+   - 2つの約定シミュレーション方式（chase / one_candle）
+4. ユニットテスト作成（TDD推奨）
+   - `tests/primary/test_atr_breakout.py`
+   - FEP計算、リターン計算の正確性検証
+
+**検証ポイント**:
+- [ ] ATR計算が正確
+- [ ] chase/one_candle両方式のリターン計算が正確
+- [ ] 全ユニットテストがパス
+
+**参照**: [architecture.md](./architecture.md#primarystrategybase抽象クラス)
+
+---
+
+### Phase 2: ファクトリーパターン (0.5日)
+
+**目的**: 戦略の動的ロード機能
+
+**実装項目**:
+1. StrategyFactory実装
+   - `_primary_strategies` 辞書定義
+   - `load_primary()` / `_load_class()` 実装
+2. テスト
+   - 戦略ロード動作確認
+   - エラーハンドリング確認
+
+**依存**: Phase 1完了後
+
+**検証ポイント**:
+- [ ] config名から戦略クラスを正しくロード
+- [ ] 存在しない戦略名でエラー
+
+**参照**: [architecture.md](./architecture.md#strategyfactory)
+
+---
+
+### Phase 3: TwoTierStrategy基本統合 (1-2日)
+
+**目的**: ML無効モードでの動作確認
+
+**実装項目**:
+1. TwoTierStrategy実装（ML無効モード）
+   - `__init__()` - config検証、primary_strategy読み込み
+   - `populate_indicators()` - 価格計算のみ
+   - `populate_entry_trend()` - 常時エントリー
+   - `populate_exit_trend()` - 明示的決済シグナル
+   - `custom_entry_price()` / `custom_exit_price()`
+2. config.json作成（ML無効モード）
+   - `two_tier_strategy.primary = "atr_breakout"`
+   - `two_tier_strategy.secondary = null`
+   - `freqai.enabled = false`
+3. バックテスト実行確認
+
+**依存**: Phase 1, 2完了後
+
+**検証ポイント**:
+- [ ] ML無効モードでバックテスト正常実行
+- [ ] 取引履歴が出力される
+- [ ] エントリー/エグジットが正しく動作
+
+**参照**: [freqai-integration.md](./freqai-integration.md#twotierstrategy統合クラス), [configuration.md](./configuration.md#1次モデルのみml無効secondarynull)
+
+---
+
+### Phase 4: FreqAI統合 (2-3日) 🔴 重要
+
+**目的**: ML有効モードの実装と検証
+
+**実装項目**:
+1. FreqAIモデル実装
+   - `user_data/freqaimodels/two_tier_lightgbm_classifier.py`
+   - `populate_indicators()` - 特徴量生成
+   - `set_freqai_targets()` - 最小限実装
+2. TwoTierStrategy拡張（ML有効モード）
+   - `populate_indicators()` - FreqAI buy/sell予測統合
+   - `populate_entry_trend()` - ML予測による判定
+   - `populate_exit_trend()` - ML予測による決済
+   - `set_freqai_targets()` - ラベル生成実装
+3. config.json作成（ML有効モード）
+   - `freqai_buy` / `freqai_sell` セクション
+   - マルチターゲット設定
+4. FreqAI訓練・予測テスト
+
+**依存**: Phase 3完了後
+
+**検証ポイント**:
+- [ ] Buy/Sellモデルが訓練される
+- [ ] `&-prediction_buy` / `&-prediction_sell` が生成される
+- [ ] ラベル生成が正確（リターン > 0 → ラベル=1）
+- [ ] ML有効モードでバックテスト正常実行
+
+**参照**: [freqai-integration.md](./freqai-integration.md#freqaiマルチターゲット実装), [configuration.md](./configuration.md#基本形式2層戦略ml有効)
+
+---
+
+### Phase 5: テスト・データリーク検証 (2-3日) 🔴 必須
+
+**目的**: データリーク検出とテスト網羅
+
+**実装項目**:
+1. データリーク検出テスト
+   - `test_no_future_data_in_features()`
+   - `test_no_shift_negative_in_indicators()`
+   - `test_label_future_data_isolation()`
+   - `test_return_calculation_uses_future_data_correctly()`
+2. Configバリデーションテスト
+   - `test_invalid_config_*()` 各種
+3. ラベル生成テスト
+   - `test_label_generation_from_returns()`
+4. 自動検出スクリプト
+   - `scripts/detect_data_leak.py`
+
+**依存**: Phase 4完了後（ただし、Phase 1-4と並行してTDD可能）
+
+**検証ポイント**:
+- [ ] データリークが検出されない
+- [ ] 全テストケースがパス
+- [ ] Config検証が正しく動作
+
+**参照**: [testing.md](./testing.md#データリーク検出チェックリスト)
+
+---
+
+### Phase 6: 最終検証 (1日)
+
+**目的**: Phase 1完了条件の確認
+
+**実装項目**:
+1. 完全なバックテスト実行
+   - ML無効モード: 正常動作確認
+   - ML有効モード: FreqAI訓練→バックテスト完了確認
+2. ドキュメント最終確認
+3. Phase 1完了条件チェック
+
+**依存**: Phase 1-5完了後
+
+**検証ポイント**:
+- [ ] すべてのテストケースがパス
+- [ ] リターンとラベル計算の正確性が保証
+- [ ] データリークが検出されない
+- [ ] Freqtrade + FreqAI の統合が完了
+- [ ] ML有効/無効両モードで動作確認
+- [ ] ドキュメントが完備
+
+**参照**: [implementation.md](./implementation.md#phase-1完了判定の具体的な基準)
+
+---
+
+### 並行作業の推奨
+
+以下の作業は並行して進めることができます：
+
+- **TDD（テスト駆動開発）**: Phase 1-4の実装と並行してテスト作成
+- **ドキュメント整備**: 実装完了した機能から順次docstring追加
+- **Config作成**: Phase 3/4の実装と並行して設定ファイル作成
+
+---
+
 ## 🏗️ アーキテクチャ実装
 
 ### ディレクトリ構造
