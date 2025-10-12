@@ -259,17 +259,21 @@ class TwoTierStrategy(IStrategy):
         リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）。
 
         Args:
-            dataframe: 指標計算済みDataFrame
+            dataframe: OHLCVデータ
             metadata: ペア情報
 
         Returns:
             &-targetカラムが追加されたDataFrame
 
         Note:
+            - 1次戦略のcalculate_prices()で指値価格を計算
             - 1次戦略のcalculate_returns()で約定シミュレーションを実行
             - execution_mode (chase/one_candle) に応じて異なるラベルが生成される
             - FreqAIフレームワークが&-targetカラムを訓練ラベルとして使用
         """
+        # 1次戦略: 指値価格計算（calculate_returns()の前提条件）
+        dataframe = self.primary_strategy.calculate_prices(dataframe)
+
         # 1次戦略: buy/sellそれぞれのリターン計算
         buy_return, sell_return = self.primary_strategy.calculate_returns(dataframe)
 
