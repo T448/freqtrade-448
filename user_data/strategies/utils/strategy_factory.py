@@ -5,7 +5,9 @@
 
 import importlib
 import logging
+import sys
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 import pandas as pd
@@ -15,6 +17,11 @@ from .price_calculator import PriceCalculatorBase, PriceCalculatorFactory
 
 
 logger = logging.getLogger(__name__)
+
+# user_dataディレクトリをパスに追加
+user_data_path = Path(__file__).parent.parent.parent
+if str(user_data_path) not in sys.path:
+    sys.path.insert(0, str(user_data_path))
 
 
 class MLTrainerBase(ABC):
@@ -494,7 +501,7 @@ class PrimaryStrategyFactory:
     # キー: config内で使用する戦略名
     # 値: モジュールパス.クラス名の文字列
     _primary_strategies = {
-        "atr_breakout": "user_data.strategies.primary.atr_breakout.ATRBreakoutStrategy",
+        "atr_breakout": "strategies.primary.atr_breakout.ATRBreakoutStrategy",
     }
 
     @classmethod
