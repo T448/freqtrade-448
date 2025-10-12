@@ -1285,6 +1285,571 @@ mkdir -p user_data/strategies/secondary
    - ユーザーが独自の戦略を追加可能
    - 登録機能で拡張が簡単
 
+## FreqAI マルチターゲット実装（方式A: 2つの独立モデル）
+
+### アーキテクチャ
+
+**実装方針**: Buy/Sell それぞれに独立した FreqAI モデルを訓練
+
+- **Buy モデル**: `TwoTierLightGBMClassifier_Buy(BaseClassifierModel)`
+- **Sell モデル**: `TwoTierLightGBMClassifier_Sell(BaseClassifierModel)`
+- 各モデルは独立した FreqAI インスタンスとして訓練・予測
+
+### Config 設定例
+
+```json
+{
+  "freqai_buy": {
+    "enabled": true,
+    "identifier": "two_tier_buy_v1",
+    "model_name": "TwoTierLightGBMClassifier",
+    "model_training_parameters": {
+      "n_estimators": 100,
+      "learning_rate": 0.1
+    }
+  },
+  "freqai_sell": {
+    "enabled": true,
+    "identifier": "two_tier_sell_v1",
+    "model_name": "TwoTierLightGBMClassifier",
+    "model_training_parameters": {
+      "n_estimators": 100,
+      "learning_rate": 0.1
+    }
+  }
+}
+```
+
+### TwoTierStrategy での統合
+
+```python
+def populate_indicators(self, dataframe, metadata):
+    """2つの独立した FreqAI モデルで予測"""
+    # Buy モデル予測
+    dataframe = self.freqai_buy.start(dataframe, metadata, self)
+    dataframe.rename(columns={'&-prediction': '&-prediction_buy'}, inplace=True)
+
+    # Sell モデル予測
+    dataframe = self.freqai_sell.start(dataframe, metadata, self)
+    dataframe.rename(columns={'&-prediction': '&-prediction_sell'}, inplace=True)
+
+    return dataframe
+```
+
+### ラベル生成（set_freqai_targets）
+
+```python
+def set_freqai_targets(self, dataframe, metadata):
+    """呼び出し元の FreqAI インスタンスに応じてラベルを切り替え"""
+    buy_return, sell_return = self.primary_strategy.calculate_returns(dataframe)
+
+    # freqai.identifier でどちらのモデルかを判定
+    if self.freqai.identifier.endswith('_buy'):
+        dataframe['&-target'] = (buy_return > 0).astype(int)
+    else:  # _sell
+        dataframe['&-target'] = (sell_return > 0).astype(int)
+
+    return dataframe
+```
+
+### 利点
+
+- ✅ FreqAI の標準パターンを使用（カスタマイズ不要）
+- ✅ 各方向の特性を独立して学習
+- ✅ モデル管理・監視が FreqAI 標準機能で可能
+
+## 特徴量計算の責任明確化
+
+### 許容される重複
+
+**1次モデルと2次モデルでの ATR 計算重複は許容**:
+
+```python
+# ✅ 許容: 1次モデルの ATR 計算（注文価格算出用）
+class ATRBreakoutStrategy(PrimaryStrategyBase):
+    def calculate_prices(self, dataframe):
+        atr = ta.ATR(dataframe, timeperiod=self.period)  # 注文価格計算用
+        dataframe["buy_price"] = dataframe["close"] - atr * self.multiplier
+        # ...
+
+# ✅ 許容: 2次モデルの ATR 計算（ML特徴量用）
+class TwoTierLightGBMClassifier(BaseClassifierModel):
+    def populate_indicators(self, dataframe, metadata):
+        dataframe['%atr_14'] = ta.ATR(dataframe, timeperiod=14)  # ML特徴量用
+        # ...
+```
+
+**理由**: 用途が異なるため（注文価格 vs ML入力）、重複しても問題なし
+
+### 削除すべき重複
+
+**TwoTierStrategy での重複計算は削除**:
+
+```python
+# ❌ 削除: 同じ目的での重複計算
+def populate_indicators(self, dataframe, metadata):
+    # PrimaryStrategy で既に計算済みなので不要
+    # dataframe['atr'] = ta.ATR(...)  # 削除
+
+    dataframe = self.primary_strategy.calculate_prices(dataframe)  # これだけで OK
+    # ...
+```
+
+## データリーク検出チェックリストとテストコード
+
+### 📋 データリーク検出チェックリスト
+
+#### 必須チェック項目
+
+**1. 未来データの使用箇所確認**
+- [ ] すべての `.shift(-n)` 使用箇所をリスト化
+- [ ] 各使用箇所が訓練時専用（`calculate_returns` 内）か確認
+- [ ] `populate_indicators` で `.shift(-n)` を使用していないか確認
+
+**2. 特徴量生成の検証**
+- [ ] `populate_indicators` で生成される全カラムをリスト化
+- [ ] 各カラムが時刻 t のデータのみを使用しているか確認
+- [ ] rolling/expanding 計算で `min_periods` が適切に設定されているか確認
+
+**3. ラベル生成の検証**
+- [ ] `calculate_returns()` で使用する未来データが特徴量に混入していないか
+- [ ] ターゲット計算ロジックで lookahead bias がないか
+- [ ] ラベル生成で使用するカラムが dataframe に追加されていないか
+
+**4. 時系列分割の検証**
+- [ ] train/test 分割が時系列順に行われているか
+- [ ] test 期間のデータが train に混入していないか
+- [ ] K-fold CV を使用している場合、TimeSeriesSplit を使用しているか
+
+### データリーク検出テストコード
+
+**テスト1: 特徴量の未来データ依存性チェック**
+
+```python
+def test_no_future_data_in_features():
+    """populate_indicators で生成される特徴量に未来データが含まれないことを検証"""
+    strategy = TwoTierStrategy(config)
+    test_data = generate_test_ohlcv(1000)
+
+    df = strategy.populate_indicators(test_data.copy(), {'pair': 'BTC/USDT'})
+
+    # 時刻 t の特徴量が時刻 t+1 以降のデータに依存していないことを確認
+    for i in range(100, len(df) - 1):
+        # 時刻 i までのデータで特徴量計算
+        df_partial = strategy.populate_indicators(
+            test_data.iloc[:i+1].copy(),
+            {'pair': 'BTC/USDT'}
+        )
+
+        # 時刻 i の特徴量が一致することを確認（未来データ不使用の証明）
+        for col in df.columns:
+            if col.startswith('%') or col.startswith('&'):  # FreqAI特徴量
+                continue  # FreqAI予測は除外
+            if col in ['open', 'high', 'low', 'close', 'volume']:
+                continue  # 元データは除外
+
+            assert np.isclose(
+                df.iloc[i][col],
+                df_partial.iloc[-1][col],
+                equal_nan=True
+            ), f"Feature {col} at index {i} depends on future data"
+
+def test_no_shift_negative_in_indicators():
+    """populate_indicators で .shift(-n) が使われていないことを確認"""
+    strategy = TwoTierStrategy(config)
+
+    # ソースコード検査（静的チェック）
+    import inspect
+    source = inspect.getsource(strategy.populate_indicators)
+
+    # .shift(-n) パターンを検出
+    import re
+    negative_shifts = re.findall(r'\.shift\s*\(\s*-\s*\d+', source)
+
+    assert len(negative_shifts) == 0, (
+        f"Found {len(negative_shifts)} .shift(-n) in populate_indicators: {negative_shifts}"
+    )
+
+def test_label_future_data_isolation():
+    """ラベル生成で使用する未来データが特徴量に混入していないことを確認"""
+    strategy = TwoTierStrategy(config)
+    test_data = generate_test_ohlcv(1000)
+
+    # 特徴量生成
+    df_features = strategy.populate_indicators(test_data.copy(), {'pair': 'BTC/USDT'})
+
+    # ラベル生成
+    df_labels = strategy.set_freqai_targets(test_data.copy(), {'pair': 'BTC/USDT'})
+
+    # ラベル生成で使用したカラム（&-target_buy, &-target_sell）が
+    # 特徴量 DataFrame に存在しないことを確認
+    label_cols = [col for col in df_labels.columns if col.startswith('&-target')]
+
+    for col in label_cols:
+        assert col not in df_features.columns, (
+            f"Label column {col} leaked into features"
+        )
+
+def test_return_calculation_uses_future_data_correctly():
+    """calculate_returns が正しく未来データを使用していることを確認"""
+    primary_strategy = ATRBreakoutStrategy(params)
+    test_data = generate_test_ohlcv(1000)
+
+    df = primary_strategy.calculate_prices(test_data.copy())
+    buy_return, sell_return = primary_strategy.calculate_returns(df)
+
+    # リターン計算で未来データを使用している（期待される動作）
+    # 時刻 i のリターンは時刻 i+exit_periods のデータを使用
+    exit_periods = primary_strategy.exit_periods
+
+    # 最後の exit_periods 行はリターン計算不可（未来データ不足）
+    assert buy_return.iloc[-exit_periods:].isna().all(), (
+        "Last rows should be NaN (no future data available)"
+    )
+
+    # それ以前の行はリターンが計算されている
+    assert not buy_return.iloc[:-exit_periods].isna().all(), (
+        "Returns should be calculated for earlier rows"
+    )
+```
+
+**テスト2: 時系列分割の検証**
+
+```python
+def test_time_series_split():
+    """訓練/テスト分割が時系列順に行われていることを確認"""
+    # FreqAI の data_split_parameters を検証
+    config = load_config('config.json')
+
+    # shuffle が False であることを確認
+    assert config['freqai']['data_split_parameters']['shuffle'] is False, (
+        "shuffle must be False for time-series data"
+    )
+
+    # test_size が適切な範囲であることを確認
+    test_size = config['freqai']['data_split_parameters']['test_size']
+    assert 0.1 <= test_size <= 0.3, (
+        f"test_size {test_size} should be between 0.1 and 0.3"
+    )
+```
+
+### 自動検出スクリプト（CI/CD 統合用）
+
+```python
+#!/usr/bin/env python3
+"""データリーク自動検出スクリプト"""
+import ast
+import sys
+
+def detect_shift_negative(file_path):
+    """Python ファイル内の .shift(-n) を検出"""
+    with open(file_path) as f:
+        source = f.read()
+
+    tree = ast.parse(source)
+    violations = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if hasattr(node.func, 'attr') and node.func.attr == 'shift':
+                if node.args and isinstance(node.args[0], ast.UnaryOp):
+                    if isinstance(node.args[0].op, ast.USub):
+                        violations.append({
+                            'line': node.lineno,
+                            'col': node.col_offset,
+                            'function': get_function_name(node, tree)
+                        })
+
+    return violations
+
+def get_function_name(node, tree):
+    """ノードが属する関数名を取得"""
+    for parent in ast.walk(tree):
+        if isinstance(parent, ast.FunctionDef):
+            if node.lineno >= parent.lineno:
+                return parent.name
+    return 'unknown'
+
+if __name__ == '__main__':
+    files = [
+        'user_data/strategies/two_tier_strategy.py',
+        'user_data/strategies/primary/atr_breakout.py',
+        # ...
+    ]
+
+    has_violations = False
+    for file in files:
+        violations = detect_shift_negative(file)
+        if violations:
+            has_violations = True
+            print(f"❌ {file}:")
+            for v in violations:
+                print(f"  Line {v['line']}: .shift(-n) in {v['function']}()")
+
+    if has_violations:
+        sys.exit(1)
+    else:
+        print("✅ No data leakage detected")
+```
+
+## Phase 1 実装完了判定の具体的な基準
+
+### 機能面の検証
+
+- [ ] **ATRBreakoutStrategy が正しく動作**
+  - [ ] buy_price = close - (atr × multiplier) の計算が正確
+  - [ ] sell_price = close + (atr × multiplier) の計算が正確
+  - [ ] 価格が DataFrame に正しく追加される
+
+- [ ] **execution_mode=chase で FEP 計算が正確**
+  - [ ] Force Entry Price の計算ロジックが richmanbtc 仕様に準拠
+  - [ ] 追いかけ型約定シミュレーションが正確
+  - [ ] 手数料計算が正確（2 × fee）
+
+- [ ] **execution_mode=one_candle で約定判定が正確**
+  - [ ] 次足での約定判定ロジックが正確
+  - [ ] 約定しない場合 return=0 が設定される
+  - [ ] 手数料計算が正確（2 × fee）
+
+- [ ] **ML 無効時（secondary=null）で動作**
+  - [ ] freqai.enabled=false + secondary=null で起動
+  - [ ] 1次戦略のみでエントリーシグナル生成
+  - [ ] バックテストが正常完了
+
+- [ ] **ML 有効時に buy/sell 独立予測を取得**
+  - [ ] 2つの FreqAI モデル（buy/sell）が訓練される
+  - [ ] &-prediction_buy と &-prediction_sell が生成される
+  - [ ] 各予測値に基づいて enter_long/enter_short が設定される
+
+### テスト面の検証
+
+- [ ] **約定シミュレーション（chase/one_candle）のユニットテスト**
+  - [ ] test_chase_execution_mode_returns()
+  - [ ] test_one_candle_execution_mode_returns()
+  - [ ] test_force_entry_price_calculation()
+  - [ ] エッジケース: データ不足、価格異常、NaN/Inf
+
+- [ ] **ラベル生成の正確性テスト**
+  - [ ] test_label_generation_from_returns()
+  - [ ] return > 0 → label=1 の検証
+  - [ ] return <= 0 → label=0 の検証
+  - [ ] buy/sell 独立ラベルの検証
+
+- [ ] **データリーク検出テスト**
+  - [ ] test_no_future_data_in_features()
+  - [ ] test_no_shift_negative_in_indicators()
+  - [ ] test_label_future_data_isolation()
+  - [ ] test_return_calculation_uses_future_data_correctly()
+
+- [ ] **Config バリデーションテスト**
+  - [ ] test_invalid_config_secondary_without_freqai()
+  - [ ] test_invalid_config_freqai_without_secondary()
+  - [ ] test_invalid_execution_mode()
+
+### 統合面の検証
+
+- [ ] **Freqtrade backtesting で正常実行**
+  - [ ] ML無効モード: `--strategy TwoTierStrategy` で実行
+  - [ ] ML有効モード: FreqAI訓練→バックテスト完了
+  - [ ] 取引履歴、メトリクスが正常出力
+
+- [ ] **FreqAI 訓練が正常完了**
+  - [ ] Buy モデル訓練成功
+  - [ ] Sell モデル訓練成功
+  - [ ] モデルファイルが user_data/models/ に保存
+
+- [ ] **ML 予測結果が entry シグナルに反映**
+  - [ ] &-prediction_buy=1 → enter_long=1
+  - [ ] &-prediction_sell=1 → enter_short=1
+  - [ ] 予測=0 の場合はエントリーなし
+
+### コード品質の検証
+
+- [ ] **データリーク自動検出スクリプトでチェック**
+  - [ ] CI/CD で自動実行
+  - [ ] .shift(-n) の誤用がない
+  - [ ] 時系列分割が正しい
+
+- [ ] **ドキュメントとの整合性**
+  - [ ] 実装が design-challenges-strategy-factory.md に準拠
+  - [ ] すべての必須機能が実装済み
+  - [ ] Phase 2 への拡張ポイントが明確
+
+### 最終確認
+
+- [ ] **すべてのテストケースがパス**
+- [ ] **リターンとラベル計算の正確性が保証**
+- [ ] **データリークが検出されない**
+- [ ] **Freqtrade + FreqAI の統合が完了**
+
+## 両建て決済メカニズムの実装（Item 2）
+
+### 調査結果: Freqtrade 損益可視化の仕様
+
+#### ❌ ポジション積み上げ方式は採用不可
+
+**結論**: Freqtradeの損益可視化は**決済済み取引のみ**を対象としており、建玉の含み損益は可視化されません。
+
+**Freqtrade公式ドキュメント調査結果**:
+
+1. **損益プロット**: `strategy_stats["daily_profit"]` は決済済み取引の累積利益のみを表示
+2. **未実現損益**: バックテスト中の建玉は「LEFT OPEN TRADES REPORT」として別途表示
+3. **エクイティカーブ**: 決済時のみ更新され、建玉の含み損益は反映されない
+
+```python
+# Freqtradeの損益プロット実装
+df["equity_daily"] = df["equity"].cumsum()  # 決済済み利益の累積のみ
+```
+
+#### ポジション積み上げ方式の問題点
+
+- ❌ **可視化不可**: 全ポジション決済まで損益グラフは平坦
+- ❌ **目的未達**: 「残高の時間変化を見たい」という要求を満たせない
+- ❌ **評価困難**: シグナル単位のパフォーマンス評価ができない
+- ❌ **非現実的**: 多数の建玉を保持し続けるのは実運用と乖離
+
+### ✅ 推奨実装: 明示的な決済シグナル方式
+
+**実装方針**: `populate_exit_trend()` で明示的に `exit_long` / `exit_short` シグナルを生成
+
+```python
+def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+    """ML予測に基づく明示的な決済シグナル生成
+
+    Freqtradeは反対売買による自動決済をサポートしていないため、
+    exit_long/exit_short で明示的に決済指示が必要
+
+    両建て状態（long + short 同時保有）では、両方のexitシグナルが
+    同時に発生する可能性があり、その場合Freqtradeは両ポジションを決済する
+    """
+    # ロング決済: sell予測=1の場合
+    dataframe.loc[
+        (dataframe['&-prediction_sell'] == 1),
+        'exit_long'
+    ] = 1
+
+    # ショート決済: buy予測=1の場合
+    dataframe.loc[
+        (dataframe['&-prediction_buy'] == 1),
+        'exit_short'
+    ] = 1
+
+    return dataframe
+```
+
+#### この方式のメリット
+
+- ✅ **損益可視化**: 決済ごとに損益グラフが更新される
+- ✅ **目的達成**: 残高の時間変化を追跡可能
+- ✅ **シグナル評価**: 各エントリー/エグジットの有効性を検証可能
+- ✅ **現実的**: 実運用に近いシミュレーション
+
+#### 設計ドキュメントへの反映
+
+`TwoTierStrategy.populate_exit_trend()` の実装を上記のように修正する必要があります（Line 795-809の内容を置き換え）。
+
+## SecondaryModelBase の削除方針（Item 8）
+
+### ✅ 結論: Phase 1 では削除すべき
+
+**理由**: FreqAIが既に十分な抽象化を提供しており、中間層は不要です。
+
+#### 現在の設計の問題点
+
+```python
+# 不要な抽象化層
+TwoTierStrategy
+├── self.primary_strategy (ATRBreakoutStrategy)  # ✅ 使用される
+├── self.secondary_model (LightGBMClassifier)     # ❌ 未使用
+└── self.freqai_buy / self.freqai_sell            # ✅ 実際に使用
+```
+
+- `SecondaryModelBase` は Phase 1 で実質的に使われていない
+- `TwoTierStrategy` が直接 `self.freqai.start()` を呼び出している
+- FreqAIの `BaseClassifierModel` が既に抽象化層を提供
+
+#### 削除対象ファイル
+
+```
+user_data/strategies/
+├── secondary/
+│   ├── base.py                     # ❌ 削除
+│   └── lightgbm_classifier.py      # ❌ 削除
+```
+
+#### 簡略化後のアーキテクチャ
+
+```python
+TwoTierStrategy(IStrategy)
+├── self.primary_strategy (ATRBreakoutStrategy)   # 1次戦略
+└── self.freqai_buy / self.freqai_sell            # FreqAI直接呼び出し
+    └── TwoTierLightGBMClassifier(BaseClassifierModel)  # FreqAI層
+```
+
+#### FreqAIによるモデル切り替え
+
+```json
+// config.json で直接切り替え可能
+{
+  "freqai_buy": {
+    "model_name": "TwoTierLightGBMClassifier",  // LightGBM
+    // "model_name": "TwoTierXGBoostClassifier",  // XGBoost
+    // "model_name": "TwoTierCatBoostClassifier", // CatBoost
+  }
+}
+```
+
+#### Phase 2 以降で抽象化が必要になる条件
+
+以下の場合**のみ**、その時点で `SecondaryModelBase` を追加:
+
+1. **非FreqAIモデル対応**: sklearn、独自ニューラルネットなど
+2. **共通ロジックの出現**: 複数の2次モデル間で重複コードが発生
+3. **FreqAI外の統合**: 他のMLフレームワークとの統合が必要
+
+現時点では該当しないため、**YAGNI原則**に従い削除すべきです。
+
+#### 設計ドキュメントへの反映
+
+- Line 217-236 のディレクトリ構造から `secondary/` を削除
+- Line 463-548 の SecondaryModelBase クラス設計を削除
+- Line 550-710 の FreqAI統合アーキテクチャセクションを簡略化
+- Line 711-854 の TwoTierStrategy 実装から secondary_model 関連コードを削除
+- Line 856-933 の StrategyFactory から load_secondary() を削除
+
+### 簡略化後の TwoTierStrategy 実装例
+
+```python
+class TwoTierStrategy(IStrategy):
+    """Config駆動の2層取引戦略（Freqtradeエントリーポイント）"""
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        two_tier_config = config.get('two_tier_strategy', {})
+
+        # 1次戦略のみロード（2次モデルは FreqAI 経由）
+        from user_data.strategies.utils.strategy_factory import StrategyFactory
+        self.primary_strategy = StrategyFactory.load_primary(two_tier_config)
+        self.is_ml_enabled = config.get('freqai', {}).get('enabled', False)
+
+    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """指標計算（価格計算＋ML統合）"""
+        # 1次戦略: 指値価格計算
+        dataframe = self.primary_strategy.calculate_prices(dataframe)
+
+        # FreqAI直接呼び出し（ML有効時のみ）
+        if self.is_ml_enabled:
+            # Buy モデル予測
+            dataframe = self.freqai_buy.start(dataframe, metadata, self)
+            dataframe.rename(columns={'&-prediction': '&-prediction_buy'}, inplace=True)
+
+            # Sell モデル予測
+            dataframe = self.freqai_sell.start(dataframe, metadata, self)
+            dataframe.rename(columns={'&-prediction': '&-prediction_sell'}, inplace=True)
+
+        return dataframe
+```
+
 ## 結論
 
 現状の実装は設計上の課題を含むものの、Phase 1の目標達成には十分であり、動作も安定している。
@@ -1295,6 +1860,7 @@ mkdir -p user_data/strategies/secondary
 - **config.jsonで名前による戦略指定** - 拡張性と柔軟性の向上
 - **secondary=nullで1次モデルのみ** - シンプルな構成も可能
 - **richmanbtc概念との整合性** - 1次戦略=完全な戦略として設計
+- **SecondaryModelBase削除** - FreqAI が提供する抽象化を活用し、不要な中間層を排除
 
 Phase 2以降で本設計を実装することで、保守性・拡張性・柔軟性を大幅に向上させることができる。
 
