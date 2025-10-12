@@ -280,6 +280,8 @@ class PrimaryStrategyBase(ABC):
     def calculate_returns(self, dataframe: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         """指値戦略のリターン計算（ML学習用ラベル生成）
 
+        約定シミュレーション方法の詳細は「学習ラベルの定義」セクション（Line 132-204）を参照
+
         Args:
             dataframe: 価格計算済みのDataFrame
 
@@ -287,7 +289,7 @@ class PrimaryStrategyBase(ABC):
             (buy_return, sell_return): 買い/売りそれぞれの理論リターン
 
         Note:
-            - execution_mode設定に基づいて約定シミュレーション方法を切り替え
+            - execution_mode設定に基づいて約定シミュレーション方法を切り替え（chase / one_candle）
             - 買いと売りで独立したリターンを計算（両建て対応）
             - 計算されたリターンは、ML学習時にラベル化される（リターン > 0 で成功）
         """
@@ -323,15 +325,11 @@ class ATRBreakoutStrategy(PrimaryStrategyBase):
     def calculate_returns(self, dataframe: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         """指値戦略のリターン計算（ML学習用ラベル生成）
 
-        richmanbtcの2つの約定シミュレーション方法を切り替え可能
-        買いと売りで独立したリターンを計算（両建て対応）
+        約定シミュレーション方法の詳細は「学習ラベルの定義」セクション参照
 
         Warning:
             このロジックは取引の根幹となるため、ミスがあると大きな損失に繋がる
             必ず包括的なテストコードで検証すること（tests/primary/test_atr_breakout.py）
-
-        Returns:
-            (buy_return, sell_return): 買い/売りそれぞれの理論リターン
         """
         if self.execution_mode == "chase":
             return self._calculate_chase_returns(dataframe)
@@ -341,12 +339,7 @@ class ATRBreakoutStrategy(PrimaryStrategyBase):
     def _calculate_chase_returns(self, dataframe: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         """アプローチ1: エントリー追いかけ型（richmanbtc例1）
 
-        エントリー: 約定するまで指値で追いかける（Force Entry Price使用）
-        エグジット: exit_periods足後に売り始め、約定するまで追いかける
-
-        実装例:
-            df['y_buy'] = df['sell_fep'].shift(-t) / df['buy_fep'] - 1 - 2 * fee
-            df['y_sell'] = -(df['buy_fep'].shift(-t) / df['sell_fep'] - 1) - 2 * fee
+        エントリー/エグジット両方で約定するまで追いかける方式
         """
         # Force Entry Price (FEP) 計算
         buy_fep = self._calculate_force_entry_price(
@@ -371,20 +364,7 @@ class ATRBreakoutStrategy(PrimaryStrategyBase):
     def _calculate_one_candle_returns(self, dataframe: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         """アプローチ2: エントリー1足限定型（richmanbtc例2、推奨）
 
-        エントリー: 指値を出して次の足でキャンセル（約定判定あり）
-        エグジット: 約定した場合のみ、exit_periods足後に売り始める
-
-        実装例:
-            df['y_buy'] = np.where(
-                (df['buy_price'] / pips).round() > (df['lo'].shift(-1) / pips).round(),
-                df['sell_fep'].shift(-t) / df['buy_price'] - 1 - 2 * fee,
-                0
-            )
-            df['y_sell'] = np.where(
-                (df['sell_price'] / pips).round() < (df['hi'].shift(-1) / pips).round(),
-                -(df['buy_fep'].shift(-t) / df['sell_price'] - 1) - 2 * fee,
-                0
-            )
+        エントリーは1足限定、約定した場合のみリターン計算
         """
         # 次足での約定判定
         buy_filled = (dataframe['buy_price'] / self.pips).round() > \
@@ -442,10 +422,11 @@ class ATRBreakoutStrategy(PrimaryStrategyBase):
 ```python
 # primary/simple_close.py
 class SimpleCloseStrategy(PrimaryStrategyBase):
-    """次足close予測用シンプル戦略（ラベル生成用）
+    """次足close予測用シンプル戦略（従来型ML取引の参考実装）
 
-    ML学習時のラベル生成に使用
-    次の足のclose上げ下げを予測するためのシンプルなロジック
+    用途: MLモデルのみの取引（約定シミュレーションなし）
+    特徴: 多くのML取引で使われる単純なclose変化予測
+    対比: richmanbtc型は指値注文の約定シミュレーションでラベル生成を工夫
     """
 
     def __init__(self, params: dict):
@@ -453,16 +434,24 @@ class SimpleCloseStrategy(PrimaryStrategyBase):
         self.threshold = params.get("threshold", 0.001)
 
     def calculate_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        """現在価格をそのまま使用"""
+        """現在価格をそのまま使用（成行想定）"""
         dataframe["buy_price"] = dataframe["close"]
         dataframe["sell_price"] = dataframe["close"]
         return dataframe
 
-    def calculate_returns(self, dataframe: pd.DataFrame) -> pd.Series:
-        """次足のclose変化率を返す（シンプルな学習用）"""
+    def calculate_returns(self, dataframe: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+        """次足のclose変化率を返す（従来型ML学習用ラベル）
+
+        Note:
+            - richmanbtc型: 指値注文の約定シミュレーションでリターン計算
+            - 従来型(本実装): 単純に次足のclose変化率を使用
+            - 買い/売りで符号を反転（売りは価格下降で利益）
+        """
         # 次足のclose変化率
         future_return = dataframe["close"].pct_change().shift(-1)
-        return future_return
+        buy_return = future_return      # 価格上昇で利益
+        sell_return = -future_return    # 価格下降で利益（符号反転）
+        return buy_return, sell_return
 ```
 
 #### 2次モデル（Secondary Model）
@@ -747,10 +736,9 @@ class TwoTierStrategy(IStrategy):
             )
 
         if freqai_enabled and not has_secondary:
-            logger.warning(
-                "freqai.enabled=true but no secondary model specified. "
-                "FreqAI will be enabled but predictions will not be used for filtering. "
-                "Consider setting secondary to a model name (e.g., 'lightgbm_classifier') or disabling FreqAI."
+            raise ValueError(
+                "Invalid configuration: freqai.enabled is True but no secondary model specified. "
+                "Please set secondary to a model name (e.g., 'lightgbm_classifier') or disable FreqAI."
             )
 
         # StrategyFactoryで1次戦略・2次モデルをロード
@@ -1032,65 +1020,28 @@ class StrategyFactory:
 - `primary_params`: 1次戦略のパラメータ
 - `secondary_params`: 2次モデルのパラメータ
 
-### Optuna最適化への対応（Phase 2）
+### 設定の組み合わせパターン
 
-Phase 2で実装予定のOptuna最適化を考慮した設計:
+| freqai.enabled | secondary | 動作モード | 説明 |
+|---------------|-----------|---------|------|
+| true | "lightgbm_classifier" | **ML予測でフィルタリング（推奨）** | buy/sell独立したML予測でエントリー判定 |
+| true | null | **エラー** | FreqAI有効ならsecondary必須 |
+| false | "lightgbm_classifier" | **エラー** | secondaryにはFreqAI必須 |
+| false | null | **1次戦略のみ（ML未使用）** | 指値価格で常に両方向エントリー |
 
-**最適化対象パラメータの定義**:
+**有効な設定**:
+- **ML使用**: `freqai.enabled=true` + `secondary="lightgbm_classifier"`
+- **ML未使用**: `freqai.enabled=false` + `secondary=null`
 
-```python
-# primary/atr_breakout.py
-class ATRBreakoutStrategy(PrimaryStrategyBase):
-    """ATR価格計算＋ブレイクアウト信号生成戦略"""
+### Phase 2機能プレビュー: Optuna最適化
 
-    # Optuna最適化用のパラメータ空間定義
-    PARAM_SPACE = {
-        "period": {"type": "int", "low": 7, "high": 28, "default": 14},
-        "multiplier": {"type": "float", "low": 0.1, "high": 2.0, "default": 0.5},
-        "lookback": {"type": "int", "low": 1, "high": 5, "default": 1}
-    }
+Phase 2で実装予定の機能：
 
-    def __init__(self, params: dict):
-        super().__init__(params)
-        self.period = params.get("period", self.PARAM_SPACE["period"]["default"])
-        self.multiplier = params.get("multiplier", self.PARAM_SPACE["multiplier"]["default"])
-        self.lookback = params.get("lookback", self.PARAM_SPACE["lookback"]["default"])
-```
+- **パラメータ空間定義**: 各戦略クラスに`PARAM_SPACE`属性を追加
+- **Optuna統合**: 戦略パラメータの自動最適化
+- **利点**: 新戦略追加時も最適化ロジックの変更不要
 
-**Optuna統合イメージ**:
-
-```python
-# Phase 2で実装
-def optimize_strategy_with_optuna(strategy_name: str, n_trials: int = 100):
-    """Optunaで戦略パラメータを最適化"""
-
-    def objective(trial):
-        # 戦略クラスからパラメータ空間を取得
-        strategy_class = StrategyFactory.get_strategy_class(strategy_name)
-        param_space = strategy_class.PARAM_SPACE
-
-        # Optunaでパラメータをサンプリング
-        params = {}
-        for param_name, space in param_space.items():
-            if space["type"] == "int":
-                params[param_name] = trial.suggest_int(param_name, space["low"], space["high"])
-            elif space["type"] == "float":
-                params[param_name] = trial.suggest_float(param_name, space["low"], space["high"])
-
-        # バックテスト実行
-        result = run_backtest(strategy_name, params)
-        return result["profit"]
-
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=n_trials)
-    return study.best_params
-```
-
-**利点**:
-
-- 各戦略クラスがパラメータ空間を定義
-- config.jsonで戦略を指定すれば、その戦略のパラメータ空間が自動的に使用される
-- 新しい戦略を追加しても、Optuna最適化ロジックの変更は不要
+詳細はPhase 2で設計・実装予定
 
 ## Phase 1実装範囲
 
