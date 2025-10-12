@@ -3,6 +3,7 @@
 1次モデル、2次モデル、エントリー戦略の選択機能を統合
 """
 
+import importlib
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple, Union
@@ -480,3 +481,132 @@ class TwoTierStrategy:
             "freqai_enabled": bool(self.freqai_config),
             "config": self.config,
         }
+
+
+class PrimaryStrategyFactory:
+    """1次戦略（Primary Strategy）のファクトリークラス
+
+    config.jsonの戦略名から具体的なPrimaryStrategyBaseクラスを動的にロードする。
+    Phase 2の実装として、新しい設計ドキュメントに基づいて実装。
+    """
+
+    # 1次戦略の登録辞書
+    # キー: config内で使用する戦略名
+    # 値: モジュールパス.クラス名の文字列
+    _primary_strategies = {
+        "atr_breakout": "user_data.strategies.primary.atr_breakout.ATRBreakoutStrategy",
+    }
+
+    @classmethod
+    def load_primary(cls, config: Dict[str, Any]) -> "PrimaryStrategyBase":
+        """1次戦略をロードして返す
+
+        Args:
+            config: two_tier_strategy設定辞書
+                - primary (str): 戦略名（必須）
+                - primary_params (dict): 戦略パラメータ（オプション）
+
+        Returns:
+            PrimaryStrategyBaseインスタンス
+
+        Raises:
+            ValueError: primary名が指定されていない、または存在しない戦略名の場合
+
+        Example:
+            config = {
+                "primary": "atr_breakout",
+                "primary_params": {
+                    "period": 14,
+                    "multiplier": 0.5,
+                    "execution_mode": "one_candle"
+                }
+            }
+            strategy = PrimaryStrategyFactory.load_primary(config)
+        """
+        primary_name = config.get("primary")
+        if not primary_name:
+            raise ValueError(
+                "Primary strategy name is required. "
+                "Please specify 'primary' in config['two_tier_strategy']"
+            )
+
+        if primary_name not in cls._primary_strategies:
+            available = ", ".join(cls._primary_strategies.keys())
+            raise ValueError(
+                f"Unknown primary strategy: '{primary_name}'. Available strategies: {available}"
+            )
+
+        # 戦略クラスをロード
+        strategy_class = cls._load_class(cls._primary_strategies[primary_name])
+
+        # パラメータを取得してインスタンス化
+        primary_params = config.get("primary_params", {})
+        strategy_instance = strategy_class(primary_params)
+
+        logger.info(
+            f"Loaded primary strategy: {primary_name} "
+            f"({type(strategy_instance).__name__}) with params: {primary_params}"
+        )
+
+        return strategy_instance
+
+    @classmethod
+    def _load_class(cls, class_path: str):
+        """モジュールパスからクラスを動的にロード
+
+        Args:
+            class_path: "module.path.ClassName"形式のクラスパス
+
+        Returns:
+            ロードされたクラスオブジェクト
+
+        Raises:
+            ImportError: モジュールのインポートに失敗した場合
+            AttributeError: クラスが見つからない場合
+        """
+        try:
+            # クラスパスを分割
+            module_path, class_name = class_path.rsplit(".", 1)
+
+            # モジュールをインポート
+            module = importlib.import_module(module_path)
+
+            # クラスを取得
+            strategy_class = getattr(module, class_name)
+
+            return strategy_class
+
+        except (ImportError, AttributeError) as e:
+            logger.error(f"Failed to load class from path '{class_path}': {e}")
+            raise
+
+    @classmethod
+    def register_strategy(cls, name: str, class_path: str) -> None:
+        """新しい1次戦略を登録する
+
+        Phase 2以降で新しい戦略を追加する際に使用。
+
+        Args:
+            name: 戦略名（config内で使用する識別子）
+            class_path: "module.path.ClassName"形式のクラスパス
+
+        Example:
+            PrimaryStrategyFactory.register_strategy(
+                "bollinger_breakout",
+                "user_data.strategies.primary.bollinger_breakout.BollingerBreakoutStrategy"
+            )
+        """
+        if name in cls._primary_strategies:
+            logger.warning(f"Overwriting existing strategy registration: {name}")
+
+        cls._primary_strategies[name] = class_path
+        logger.info(f"Registered primary strategy: {name} -> {class_path}")
+
+    @classmethod
+    def list_available_strategies(cls) -> list:
+        """利用可能な1次戦略のリストを取得
+
+        Returns:
+            登録済み戦略名のリスト
+        """
+        return list(cls._primary_strategies.keys())
