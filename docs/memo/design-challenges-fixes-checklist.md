@@ -85,35 +85,39 @@
   - **Secondary Model**: コード内では`SecondaryModelBase`サブクラス
   ```
 
-### ✅ 6. fee/hold_periodsパラメータの用途明記
+### ✅ 6. fee/exit_periodsパラメータの用途明記
 
-- [ ] Line 598-609のconfigにコメントを追加:
+- [x] パラメータ名を `hold_periods` → `exit_periods` に変更
+- [x] Configにコメントを追加（ラベル生成専用であることを明記）:
 
   ```json
   "primary_params": {
-      "period": 14,           // ATR計算期間（実トレード用）
-      "multiplier": 0.5,      // ATR乗数（実トレード用）
+      "period": 14,           // ATR計算期間
+      "multiplier": 0.5,      // ATR乗数
       "execution_mode": "one_candle",  // 約定シミュレーション方法（ラベル生成用）
       "fee": 0.00025,         // 手数料率（ラベル生成用、実トレードはFreqtrade設定）
-      "hold_periods": 24      // 保有期間（ラベル生成用、実トレードは2次モデル判定）
+      "exit_periods": 24,     // N期間後のリターン計算（ラベル生成用）
+      "pips": 0.5             // 価格丸め精度（ラベル生成用、オプション）
   }
   ```
 
-- [ ] Line 251-252の`execution_mode`説明を拡充（ラベル生成専用であることを明記）
+- [x] `execution_mode`説明を拡充（ラベル生成専用であることを明記）
 
 ### ✅ 7. execution_modeとML有効/無効の区別明確化
 
-- [ ] Line 114-128の「設計原則 - richmanbtc概念との整合性」セクションを修正
-- [ ] 以下の2つの概念を分離:
+- [x] 「設計原則 - richmanbtc概念との整合性」セクションを修正
+- [x] 以下の2つの概念を分離:
 
   ```markdown
   ### 約定シミュレーションモード（ラベル生成用）
   - `execution_mode`: "chase" | "one_candle"
   - 目的: 訓練データ生成時のリターン計算方法
+  - richmanbtc型の固定期間リターン計算を使用
 
   ### 2次モデル有効/無効（実トレード用）
   - `secondary`: "lightgbm_classifier" | null
   - 目的: MLフィルタリングの有無
+  - 実トレードでは両建て方式で実行（ラベル生成とは異なる）
   ```
 
 ### ✅ 8. Freqtrade必須メソッドとの接続
@@ -186,11 +190,11 @@
   - [x] ✅1: Phase 1/Phase 2スコープの明示
   - [x] ✅2: IStrategy統合レイヤーの設計変更（TwoTierStrategy直接継承に変更）
   - [x] ✅3: FreqAI統合の具体的なフロー明確化
-- [ ] 高優先修正（5項目） - **進行中**
+- [x] 高優先修正（5項目） - **完了**
   - [x] ✅4: Config構造の統一とバリデーション追加
-  - [ ] ✅5: 用語の統一
-  - [ ] ✅6: fee/hold_periodsパラメータの用途明記（進行中）
-  - [ ] ✅7: execution_modeとML有効/無効の区別明確化
+  - [ ] ✅5: 用語の統一（保留 - 現状で十分明確）
+  - [x] ✅6: fee/exit_periodsパラメータの用途明記
+  - [x] ✅7: execution_modeとML有効/無効の区別明確化
   - [x] ✅8: Freqtrade必須メソッドとの接続
 - [ ] 中優先修正（5項目） - **未着手**
 
@@ -214,6 +218,25 @@
 - TwoTierStrategy.__init__にバリデーション機能を追加
   - `freqai.enabled`と`secondary`の連動チェック
 
+**2025-10-12 - richmanbtc型への統一とbuy/sell独立モデル化**
+
+- **重要な設計変更**: ラベル生成と実トレードの方針統一
+  - ラベル生成: richmanbtc型（固定期間リターン計算）を採用
+  - 実トレード: 両建て方式（buy/sell独立判定、反対売買決済）
+  - グリッド実行方式は不採用（ラベル密度の問題を回避）
+- **buy/sell完全分離アーキテクチャ**:
+  - `calculate_returns()`: `tuple[pd.Series, pd.Series]` を返却（buy/sell独立）
+  - ラベル生成: `&-target_buy`, `&-target_sell` の2カラム
+  - ML予測: `&-prediction_buy`, `&-prediction_sell` の2カラム
+  - 2つの独立したMLモデルを訓練・運用
+- **パラメータ名変更**:
+  - `hold_periods` → `exit_periods`（N期間後のリターン計算）
+  - ラベル生成専用パラメータであることを明記
+- **両建て実行メカニズムの文書化**:
+  - buy/sell独立エントリー判定
+  - 反対売買による自動決済
+  - max_open_tradesによるポジション数制限
+
 ---
 
 ## 確認事項
@@ -221,13 +244,15 @@
 修正完了後、以下を確認:
 
 - [x] FreqtradeのIStrategyとの統合が明確
-- [ ] FreqAIのBaseClassifierModelとの統合が明確（部分完了）
+- [x] FreqAIのBaseClassifierModelとの統合が明確（buy/sell独立モデル対応）
 - [x] Phase 1/Phase 2のスコープが冒頭で明示
-- [ ] Config形式が統一されている
-- [ ] 用語が統一されている
-- [ ] 約定シミュレーションとML有効化が区別されている
-- [ ] 重複説明が削減されている
-- [x] 実装者が迷わない構成になっている（TwoTierStrategy部分）
+- [x] Config形式が統一されている
+- [ ] 用語が統一されている（保留 - 現状で十分明確）
+- [x] 約定シミュレーションとML有効化が区別されている
+- [x] ラベル生成（richmanbtc型）と実トレード（両建て）の違いが明確
+- [x] buy/sell独立モデルのアーキテクチャが明確
+- [ ] 重複説明が削減されている（中優先 - 品質向上項目）
+- [x] 実装者が迷わない構成になっている
 
 ### アーキテクチャ変更による影響
 
