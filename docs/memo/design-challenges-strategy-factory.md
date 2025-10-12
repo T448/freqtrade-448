@@ -34,6 +34,12 @@
 - 複数の2次モデル実装（XGBoost、CatBoost等）
 - Optuna最適化機能の追加
 
+## 用語定義
+
+- **1次戦略（Primary Strategy）**: ATRブレイクアウトなど、指値価格とリターンを計算する戦略ロジック
+- **2次モデル（Secondary Model）**: 1次戦略のリターン予測を行うMLモデル（LightGBMなど）
+- **コード内の表記**: クラス名は `PrimaryStrategyBase`, `SecondaryModelBase` を使用
+
 ## 概要
 
 本ドキュメントでは、Phase 2への拡張性を考慮しつつ、Phase 1で実装すべきより拡張性と柔軟性の高いアーキテクチャを提案する。
@@ -454,7 +460,7 @@ class SimpleCloseStrategy(PrimaryStrategyBase):
         return buy_return, sell_return
 ```
 
-#### 2次モデル（Secondary Model）
+#### 2次モデル
 
 ```python
 # secondary/base.py

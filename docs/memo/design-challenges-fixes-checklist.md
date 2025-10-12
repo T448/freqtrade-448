@@ -71,18 +71,17 @@
 
 ### ✅ 5. 用語の統一
 
-- [ ] 全文を検索し、以下に統一:
-  - "Primary Model" → "1次戦略"（または"Primary Strategy"）
-  - "Secondary Model" → "2次モデル"
+- [x] 全文を検索し、以下に統一:
+  - "Primary Model" → 使用なし
+  - "Secondary Model" → "2次モデル"に変更
   - クラス名は維持: `PrimaryStrategyBase`, `SecondaryModelBase`
-- [ ] 用語集セクションを追加（冒頭付近）:
+- [x] 用語集セクションを追加（Line 37-41）:
 
   ```markdown
   ## 用語定義
-  - **1次戦略**: ATRブレイクアウトなど、指値価格とリターンを計算する戦略ロジック
-  - **2次モデル**: 1次戦略のリターン予測を行うMLモデル（LightGBMなど）
-  - **Primary Strategy**: コード内では`PrimaryStrategyBase`サブクラス
-  - **Secondary Model**: コード内では`SecondaryModelBase`サブクラス
+  - **1次戦略（Primary Strategy）**: ATRブレイクアウトなど、指値価格とリターンを計算する戦略ロジック
+  - **2次モデル（Secondary Model）**: 1次戦略のリターン予測を行うMLモデル（LightGBMなど）
+  - **コード内の表記**: クラス名は `PrimaryStrategyBase`, `SecondaryModelBase` を使用
   ```
 
 ### ✅ 6. fee/exit_periodsパラメータの用途明記
@@ -192,7 +191,7 @@
   - [x] ✅3: FreqAI統合の具体的なフロー明確化
 - [x] 高優先修正（5項目） - **完了**
   - [x] ✅4: Config構造の統一とバリデーション追加
-  - [ ] ✅5: 用語の統一（保留 - 現状で十分明確）
+  - [x] ✅5: 用語の統一
   - [x] ✅6: fee/exit_periodsパラメータの用途明記
   - [x] ✅7: execution_modeとML有効/無効の区別明確化
   - [x] ✅8: Freqtrade必須メソッドとの接続
@@ -261,6 +260,14 @@
   - richmanbtc型との対比を明記
   - buy/sell符号反転ロジックの追加
 
+**2025-10-12 - 用語の統一（✅5）**
+
+- **用語集セクション追加**（Line 37-41）
+  - 1次戦略（Primary Strategy）と2次モデル（Secondary Model）の定義を明記
+  - コード内の表記（`PrimaryStrategyBase`, `SecondaryModelBase`）を明示
+- **"Secondary Model" の統一**
+  - セクション見出し"2次モデル（Secondary Model）" → "2次モデル"に変更
+
 ---
 
 ## 確認事項
@@ -271,11 +278,11 @@
 - [x] FreqAIのBaseClassifierModelとの統合が明確（buy/sell独立モデル対応）
 - [x] Phase 1/Phase 2のスコープが冒頭で明示
 - [x] Config形式が統一されている
-- [ ] 用語が統一されている（保留 - 現状で十分明確）
+- [x] 用語が統一されている（用語定義セクション追加）
 - [x] 約定シミュレーションとML有効化が区別されている
 - [x] ラベル生成（richmanbtc型）と実トレード（両建て）の違いが明確
 - [x] buy/sell独立モデルのアーキテクチャが明確
-- [ ] 重複説明が削減されている（中優先 - 品質向上項目）
+- [x] 重複説明が削減されている（中優先修正で完了）
 - [x] 実装者が迷わない構成になっている
 
 ### アーキテクチャ変更による影響
