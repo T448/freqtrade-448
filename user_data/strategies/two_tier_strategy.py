@@ -73,7 +73,16 @@ class TwoTierStrategy(IStrategy):
 
         # Config validation: freqai.enabled と secondary の整合性チェック
         freqai_enabled = freqai_config.get("enabled", False)
-        has_secondary = two_tier_config.get("secondary") is not None
+        secondary = two_tier_config.get("secondary")
+
+        # 空文字列チェック: secondary が空文字列の場合はエラー
+        if secondary is not None and secondary == "":
+            raise ValueError(
+                "two_tier_strategy.secondary cannot be empty string. "
+                "Use null/None to disable secondary strategy."
+            )
+
+        has_secondary = secondary is not None
 
         if has_secondary and not freqai_enabled:
             raise ValueError(
@@ -86,6 +95,12 @@ class TwoTierStrategy(IStrategy):
                 "Invalid configuration: freqai.enabled is True but no secondary model specified. "
                 "Please set secondary to a model name (e.g., 'lightgbm_classifier') or disable FreqAI."
             )
+
+        # FreqAIセクション存在チェック (ML有効時に必要)
+        execution_mode = two_tier_config.get("primary_params", {}).get("execution_mode")
+        if execution_mode == "ml_enhanced":
+            if "freqai" not in config:
+                raise ValueError("execution_mode='ml_enhanced' requires 'freqai' section in config")
 
         # 1次戦略をロード
         self.primary_strategy = PrimaryStrategyFactory.load_primary(two_tier_config)

@@ -119,17 +119,15 @@
         }
     },
     "two_tier_strategy": {
-        "preset": "price_only",
-        "primary_model": {
-            "type": "atr",
-            "params": {
-                "period": 14,
-                "multiplier": 0.5
-            }
-        },
-        "secondary_model": {
-            "enabled": false,
-            "confidence_threshold": 0.6
+        "primary": "atr_breakout",
+        "secondary": null,
+        "primary_params": {
+            "period": 14,
+            "multiplier": 0.5,
+            "fee": 0.00025,
+            "exit_periods": 24,
+            "pips": 0.5,
+            "execution_mode": "one_candle"
         }
     },
     "telegram": {
