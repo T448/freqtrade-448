@@ -1,0 +1,156 @@
+{
+    "$schema": "https://schema.freqtrade.io/schema.json",
+    "max_open_trades": 5,
+    "stake_currency": "USDT",
+    "stake_amount": 100,
+    "tradable_balance_ratio": 0.99,
+    "fiat_display_currency": "USD",
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "cancel_open_orders_on_exit": true,
+    "timeframe": "15m",
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "minimal_roi": {
+        "0": 0.05,
+        "30": 0.03,
+        "60": 0.01,
+        "120": 0
+    },
+    "stoploss": -0.10,
+    "unfilledtimeout": {
+        "entry": 60,
+        "exit": 30,
+        "exit_timeout_count": 0,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0
+    },
+    "order_types": {
+        "entry": "limit",
+        "exit": "limit",
+        "emergency_exit": "market",
+        "force_exit": "market",
+        "force_entry": "market",
+        "stoploss": "market",
+        "stoploss_on_exchange": false,
+        "stoploss_price_type": "last",
+        "stoploss_on_exchange_interval": 60,
+        "stoploss_on_exchange_limit_ratio": 0.99
+    },
+    "order_time_in_force": {
+        "entry": "GTC",
+        "exit": "GTC"
+    },
+    "exchange": {
+        "name": "bybit",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {},
+        "ccxt_async_config": {},
+        "pair_whitelist": [
+            "BTC/USDT:USDT"
+        ],
+        "pair_blacklist": [
+            ".*[/]BNB"
+        ]
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "freqai": {
+        "enabled": false,
+        "purge_old_models": 3,
+        "train_period_days": 20,
+        "backtest_period_days": 7,
+        "live_retrain_hours": 24,
+        "identifier": "ATRLightGBMClassifier_v1",
+        "feature_parameters": {
+            "include_timeframes": [
+                "15m"
+            ],
+            "include_corr_pairlist": [
+                "BTC/USDT:USDT"
+            ],
+            "label_period_candles": 1,
+            "include_shifted_candles": 2,
+            "DI_threshold": 0.6,
+            "weight_factor": 0.8,
+            "principal_component_analysis": false,
+            "use_SVM_to_remove_outliers": true,
+            "indicator_periods_candles": [
+                10,
+                14,
+                20
+            ],
+            "plot_feature_importances": 5
+        },
+        "data_split_parameters": {
+            "test_size": 0.2,
+            "shuffle": false,
+            "random_state": 42
+        },
+        "model_training_parameters": {
+            "n_estimators": 100,
+            "learning_rate": 0.1,
+            "max_depth": 7,
+            "num_leaves": 31,
+            "min_child_samples": 20,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "random_state": 42,
+            "verbose": -1
+        }
+    },
+    "two_tier_strategy": {
+        "primary": "atr_breakout",
+        "secondary": null,
+        "primary_params": {
+            "period": 14,
+            "multiplier": 0.5,
+            "fee": 0.00025,
+            "exit_periods": 24,
+            "pips": 0.5,
+            "execution_mode": "one_candle"
+        }
+    },
+    "telegram": {
+        "enabled": false,
+        "token": "",
+        "chat_id": ""
+    },
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "enable_openapi": false,
+        "jwt_secret_key": "",
+        "ws_token": "",
+        "CORS_origins": [],
+        "username": "T448",
+        "password": "password"
+    },
+    "bot_name": "ATR_ML_Bot",
+    "force_entry_enable": true,
+    "initial_state": "running",
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}

@@ -8,6 +8,26 @@ Kiro-style Spec Driven Development implementation using claude code slash comman
 - **Always use sequential-thinking** when considering implementation strategies or investigating bugs. You don't need to use it if the resolution approach has already been determined.
 - When searching for hidden folders like `.tmp`, the `List` tool is unlikely to find them. **Use the `Bash` tool to find hidden folders**.
 
+## Comment Rules
+
+- コメントは「なぜその実装にしたか」を説明してください。コードの動作を単に繰り返す説明は避けてください
+  - ✅ 良い例: 「高速化のため、ループではなくリスト内包表記を使用」
+  ❌ 悪い例: 「ループで要素を処理する」
+- コメントには「新」「統合」「修正」などの抽象的な単語だけを使わず、意味のある説明をしてください
+- 指示に従って実装する際は、コメントに「Aの方法による○○処理」などと書かず、処理の目的や背景を説明してください
+
+## Quality Rules
+
+- 必要に応じて関数やクラスに分割し、可読性・拡張性を高めてください
+- 要件を満たすためにフォールバック処理や局所的な分岐を増やすのではなく、条件を整理して見通しの良い構造にしてください
+- ログは必要な箇所にだけ、問題調査に役立つ粒度で出力してください。不要に大量のログを追加しないでください
+- 例外処理は握り潰さず、適切にハンドリングしてください。大部分を try-except で囲むのではなく、必要な箇所で発生しうる例外を個別に扱ってください
+
+## Testability Rules
+
+- テストしやすいよう、副作用の少ない関数を設計してください。
+- 入出力が明確になるように、関数の引数と戻り値を意識してください。
+
 ## Project Context
 
 ### Paths

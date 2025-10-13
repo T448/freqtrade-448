@@ -1,65 +1,60 @@
 """
-ATRMLStrategy - 2層統合トレーディングストラテジー
+リファクタリング済みATR機械学習統合戦略
 
-richmanbtcチュートリアルの概念に基づく2層システム：
-1. ATRベースの指値戦略（1次モデル）
-2. LightGBM機械学習分類（2次モデル）
-
-要件:
-- 5.1: FreqtradeストラテジーとのMLOps統合
-- 5.2: フォールバック機能と運用安全性
+設計文書に基づく2層戦略アーキテクチャの実装
+- 設定駆動型による手法の柔軟な切り替え
+- FreqAI機能の最大活用
+- 統合ファクトリーパターンによる保守性向上
 """
 
 import logging
 import os
-
-# Import utilities using absolute import compatible with Freqtrade
 import sys
 from typing import Optional
 
 import pandas as pd
+from freqtrade.strategy import IStrategy, DecimalParameter
 
-from freqtrade.strategy import IStrategy
-
-
+# パス設定
 sys.path.append(os.path.dirname(__file__))
 
-from utils.atr_calculator import ATRCalculatorEngine
-from utils.entry_strategy import EntryStrategyFactory
-
+# リファクタリング済みモジュールのインポート
+from utils.strategy_factory import StrategyFactory, TwoTierStrategy
+from utils.strategy_config import get_strategy_config
+from utils.freqai_model_factory import FreqAIModelFactory
 
 logger = logging.getLogger(__name__)
 
 
 class ATRMLStrategy(IStrategy):
     """
-    ATR機械学習統合ストラテジー
+    ATR機械学習統合戦略
 
-    richmanbtcチュートリアルの2層トレーディングシステムを実装。
-    ATR戦略（1次）とLightGBM分類（2次）を統合して取引判定を行う。
+    設定駆動型により、コード変更なしで以下の切り替えが可能：
+    - 1次モデル: ATR, ボリンジャーバンド, 移動平均等
+    - 2次モデル: LightGBM, XGBoost, CatBoost等
+    - 戦略設定: デフォルト, 高頻度, 保守的等
     """
 
-    # ストラテジー基本設定
+    # 戦略基本設定
     INTERFACE_VERSION: int = 3
     minimal_roi = {"0": 0.05, "30": 0.03, "60": 0.01, "120": 0}
     stoploss = -0.10
-    timeframe = "5m"
+    timeframe = "15m"
     process_only_new_candles = True
 
     # FreqAI統合設定
-    can_short = True  # ショート取引有効
+    can_short = True
     use_exit_signal = True
 
-    # ATR戦略パラメータ
-    entry_length = 14  # ATR計算期間
-    entry_point = 0.5  # ATR乗数
-
-    # ML統合パラメータ
-    confidence_threshold = 0.6  # ML予測信頼度閾値
+    # Hyperopt最適化対象外の設定パラメータ
+    ml_rejection_offset_ratio = DecimalParameter(
+        0.01, 0.5, default=0.1, decimals=2, space="buy", optimize=False, load=True
+    )
 
     def __init__(self, config=None, **kwargs):
         """
-        ストラテジー初期化
+        戦略初期化
 
         Args:
             config: Freqtrade設定辞書
@@ -67,87 +62,195 @@ class ATRMLStrategy(IStrategy):
         """
         super().__init__(config, **kwargs)
 
-        # カスタム設定の読み込み
-        if config and "atr_ml_strategy" in config:
-            strategy_config = config["atr_ml_strategy"]
-            self.entry_length = strategy_config.get("entry_length", self.entry_length)
-            self.entry_point = strategy_config.get("entry_point", self.entry_point)
-            self.confidence_threshold = strategy_config.get(
-                "confidence_threshold", self.confidence_threshold
-            )
+        # 戦略設定の読み込み
+        strategy_config = self._load_strategy_config(config)
 
-        # 統一ATR計算エンジンの初期化
-        self.atr_engine = ATRCalculatorEngine.get_instance(self.entry_length, self.entry_point)
+        # 2層戦略の作成
+        self.two_tier_strategy = StrategyFactory.create_two_tier_strategy(strategy_config)
 
-        # エントリー戦略は動的に決定（populate_entry_trendで初期化）
-        self.entry_strategy = None
+        # パラメータの展開
+        primary_config = strategy_config.get("primary_model", {})
+        self.entry_length = primary_config.get("params", {}).get("period", 14)
+        self.entry_point = primary_config.get("params", {}).get("multiplier", 0.5)
 
-        logger.debug(
-            f"ATRMLStrategy initialized: length={self.entry_length}, point={self.entry_point}"
+        secondary_config = strategy_config.get("secondary_model", {})
+        self.confidence_threshold = secondary_config.get("confidence_threshold", 0.6)
+
+        # FreqAI有効性の確認
+        self.freqai_enabled = (
+            config and "freqai" in config and config["freqai"].get("enabled", False)
         )
 
-    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        # パラメータの検証
+        self._validate_parameters()
+
+        logger.info(
+            f"ATRMLStrategy initialized: "
+            f"primary={primary_config.get('type', 'unknown')}, "
+            f"secondary={'enabled' if secondary_config.get('enabled') else 'disabled'}, "
+            f"freqai={'enabled' if self.freqai_enabled else 'disabled'}"
+        )
+
+    def _validate_parameters(self) -> None:
+        """戦略パラメータの検証
+
+        ml_rejection_offset_ratioの値が適切な範囲内にあることを確認し、
+        推奨範囲外の場合は警告を出力する
+
+        Raises:
+            ValueError: パラメータが許容範囲外の場合
         """
-        テクニカル指標とATR価格の計算 - 要件 5.1
+        offset = self.ml_rejection_offset_ratio.value
+
+        if not (0.01 <= offset <= 0.5):
+            raise ValueError(
+                f"ml_rejection_offset_ratio must be between 0.01 and 0.5, got {offset}"
+            )
+
+        # 警告レベルのチェック（極端な値の場合に推奨範囲を提示）
+        if offset < 0.05:
+            logger.warning(
+                f"ml_rejection_offset_ratio={offset} is very small. "
+                f"Rejected trades may still execute in volatile markets."
+            )
+        elif offset > 0.2:
+            logger.warning(
+                f"ml_rejection_offset_ratio={offset} is large. "
+                f"May miss profitable trades due to overly conservative filtering."
+            )
+
+    def _load_strategy_config(self, config) -> dict:
+        """戦略設定の読み込み
 
         Args:
-            dataframe: OHLCデータ
+            config: Freqtrade設定辞書
+
+        Returns:
+            戦略設定辞書
+        """
+        if not config or "two_tier_strategy" not in config:
+            logger.warning("two_tier_strategy not found in config, using default")
+            return get_strategy_config("price_only")
+
+        two_tier_config = config["two_tier_strategy"]
+
+        # プリセット指定がある場合
+        if "preset" in two_tier_config:
+            preset_name = two_tier_config["preset"]
+            logger.info(f"Loading preset: {preset_name}")
+            base_config = get_strategy_config(preset_name)
+        else:
+            # プリセットなしの場合はデフォルト設定を基準
+            base_config = get_strategy_config("default")
+
+        # config.jsonの直接設定で上書き
+        if "primary_model" in two_tier_config:
+            base_config["primary_model"] = two_tier_config["primary_model"]
+
+        if "secondary_model" in two_tier_config:
+            base_config["secondary_model"].update(two_tier_config["secondary_model"])
+
+        logger.info(
+            f"Strategy config loaded: "
+            f"primary={base_config['primary_model']['type']}, "
+            f"ml_enabled={base_config.get('secondary_model', {}).get('enabled', False)}"
+        )
+
+        return base_config
+
+    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """指標計算（統合アーキテクチャ）
+
+        例外が発生した場合は適切にハンドリングし、呼び出し元に伝播させる
+
+        Args:
+            dataframe: OHLC データ
             metadata: ペア情報
 
         Returns:
             指標が追加されたDataFrame
         """
-        try:
-            # ATR関連価格の計算
-            dataframe = self._calculate_atr_prices(dataframe)
+        pair = metadata.get("pair", "unknown")
 
-            # FreqAI予測の取得（有効性チェック）
-            freqai_enabled = (
-                hasattr(self, "freqai")
-                and self.freqai is not None
-                and getattr(self.freqai, "enabled", False)
+        # 1次モデルによる価格計算
+        dataframe = self._calculate_primary_prices(dataframe)
+
+        # FreqAI統合（有効時のみ）
+        if self.freqai_enabled:
+            dataframe = self._integrate_freqai_predictions(dataframe, metadata)
+
+        logger.debug(f"Indicators calculation completed: {pair}, records={len(dataframe)}")
+        return dataframe
+
+    def _calculate_primary_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """1次モデルによる価格計算
+
+        Raises:
+            ValueError: ATR計算に必要なデータが不足している場合
+        """
+        return self.two_tier_strategy.primary_model.calculate_entry_prices(dataframe)
+
+    def _integrate_freqai_predictions(
+        self, dataframe: pd.DataFrame, metadata: dict
+    ) -> pd.DataFrame:
+        """FreqAI予測の統合とML調整
+
+        FreqAIによる予測を取得し、ML予測に基づく価格調整を適用
+
+        Raises:
+            Exception: FreqAI予測取得または価格調整に失敗した場合
+        """
+        # FreqAI予測取得
+        dataframe = self.freqai.start(dataframe, metadata, self)
+
+        # ML予測に基づく価格調整
+        if "&-prediction" in dataframe.columns:
+            dataframe = self._adjust_prices_by_ml_prediction(dataframe)
+            logger.debug("ML-based price adjustment applied")
+
+        logger.debug("FreqAI prediction data integrated successfully")
+        return dataframe
+
+    def _adjust_prices_by_ml_prediction(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """ML予測に基づく指値価格調整
+
+        予測が0(損失予測)の場合、10%オフセットで取引を実質無効化
+        1次モデル(ATR)の指値は維持しつつ、2次モデル(ML)によるフィルタリングを実現
+
+        Raises:
+            ValueError: 必要なカラムが存在しない場合
+        """
+        # カラム存在確認
+        required_columns = {"close", "buy_price", "sell_price", "&-prediction"}
+        missing_columns = required_columns - set(dataframe.columns)
+
+        if missing_columns:
+            available_columns = sorted(dataframe.columns.tolist())
+            raise ValueError(
+                f"Required columns missing for ML price adjustment: {sorted(missing_columns)}. "
+                f"Available columns: {available_columns}. "
+                f"Please ensure: (1) populate_indicators ran successfully, "
+                f"(2) primary model calculated buy_price/sell_price, "
+                f"(3) FreqAI generated predictions (&-prediction column)."
             )
 
-            if freqai_enabled:
-                try:
-                    dataframe = self.freqai.start(dataframe, metadata, self)
-                    logger.debug("FreqAI prediction data added successfully")
-                except Exception as freqai_error:
-                    logger.warning(f"FreqAI execution failed: {freqai_error}")
-                    logger.debug("Continuing with ATR-only strategy")
-            else:
-                logger.debug("FreqAI disabled - running backtest with ATR only")
+        # ML予測が0(損失予測)の場合、取引を避けるため
+        # 設定可能なオフセット比率で指値価格を市場価格から外し、実質的に約定不可能にする
+        large_offset = dataframe["close"] * self.ml_rejection_offset_ratio.value
+        prediction = dataframe["&-prediction"]
 
-            pair = metadata.get("pair", "unknown")
-            logger.debug(f"Indicators calculation completed: {pair}, records={len(dataframe)}")
-
-            return dataframe
-
-        except Exception as e:
-            pair = metadata.get("pair", "unknown")
-            logger.error(f"Indicators calculation error ({pair}): {e}")
-            return dataframe
-
-    def _calculate_atr_prices(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        """
-        ATR価格計算 - 要件 5.1（統一エンジン使用）
-
-        Args:
-            dataframe: OHLCデータ
-
-        Returns:
-            ATR価格が追加されたDataFrame
-        """
-        # 統一ATR計算エンジンを使用
-        return self.atr_engine.calculate_atr_prices(
-            dataframe, period=self.entry_length, multiplier=self.entry_point
+        # 予測が0の場合のみ価格を大きく外す
+        dataframe["buy_price"] = dataframe["buy_price"].where(
+            prediction != 0, dataframe["buy_price"] - large_offset
+        )
+        dataframe["sell_price"] = dataframe["sell_price"].where(
+            prediction != 0, dataframe["sell_price"] + large_offset
         )
 
-    def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """
-        エントリートレンド生成 - 要件 5.1（新アーキテクチャ）
+        return dataframe
 
-        ストラテジーパターンを使用してML予測有無に応じた適切な戦略を選択
+    def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """エントリートレンド生成
 
         Args:
             dataframe: 指標付きDataFrame
@@ -155,82 +258,15 @@ class ATRMLStrategy(IStrategy):
 
         Returns:
             エントリー信号が追加されたDataFrame
+
+        Raises:
+            ValueError: カラム不足など設定の問題
+            Exception: その他の予期しないエラー
+
+        Note:
+            エラーが発生した場合、Freqtradeフレームワークが適切にハンドリングします
         """
-        try:
-            pair = metadata.get("pair", "unknown")
-
-            # データ十分性チェック
-            if len(dataframe) < self.entry_length + 10:
-                logger.warning(
-                    f"Insufficient data {pair}: need={self.entry_length + 10}, got={len(dataframe)}"
-                )
-                # エントリー信号カラムの初期化
-                dataframe["enter_long"] = 0
-                dataframe["enter_short"] = 0
-                return dataframe
-
-            # ML予測データの有無を確認
-            has_ml_prediction = "&-prediction" in dataframe.columns
-
-            # 適切なエントリー戦略を動的に選択
-            self.entry_strategy = EntryStrategyFactory.create_strategy(
-                has_ml_prediction, self.atr_engine
-            )
-
-            # 設定パラメータを準備
-            config = {
-                "entry_length": self.entry_length,
-                "entry_point": self.entry_point,
-                "confidence_threshold": self.confidence_threshold,
-            }
-
-            # 選択された戦略でエントリー信号を生成
-            dataframe = self.entry_strategy.generate_entry_signals(dataframe, metadata, config)
-
-            # 予測詳細ログ（簡略化）
-            self._log_prediction_summary(dataframe, metadata)
-
-            return dataframe
-
-        except Exception as e:
-            pair = metadata.get("pair", "unknown")
-            logger.error(f"Entry trend generation error {pair}: {e}")
-            # 安全なフォールバック
-            dataframe["enter_long"] = 0
-            dataframe["enter_short"] = 0
-            return dataframe
-
-    def _log_prediction_summary(self, dataframe: pd.DataFrame, metadata: dict) -> None:
-        """
-        予測結果の簡略サマリーログ - 要件 5.2
-
-        Args:
-            dataframe: データフレーム
-            metadata: ペア情報
-        """
-        try:
-            pair = metadata.get("pair", "unknown")
-
-            # エントリー信号統計
-            long_signals = dataframe["enter_long"].sum()
-            short_signals = dataframe["enter_short"].sum()
-            total_records = len(dataframe)
-
-            logger.info(
-                f"Entry signals {pair}: long={long_signals}, short={short_signals}, total={total_records}"
-            )
-
-            # ML予測統計（利用可能な場合のみ）
-            if "&-prediction" in dataframe.columns:
-                predictions = dataframe["&-prediction"].dropna()
-                if len(predictions) > 0:
-                    positive_predictions = (predictions == 1).sum()
-                    prediction_ratio = positive_predictions / len(predictions)
-                    logger.debug(f"ML prediction ratio {pair}: {prediction_ratio:.3f}")
-
-        except Exception as e:
-            pair = metadata.get("pair", "unknown")
-            logger.error(f"Prediction summary log error {pair}: {e}")
+        return self.two_tier_strategy.generate_entry_signals(dataframe, metadata)
 
     def custom_entry_price(
         self,
@@ -243,44 +279,17 @@ class ATRMLStrategy(IStrategy):
         **kwargs,
     ) -> float:
         """
-        ATR指値価格計算 - 要件 5.1（統一エンジン使用）
+        エントリー価格計算
 
         Args:
             pair: 取引ペア
-            side: 取引方向（"long" or "short"）
+            side: 取引方向
 
         Returns:
-            ATRベース指値価格
+            1次モデルによる指値価格
         """
         try:
-            # 最新のデータフレーム取得
-            dataframe = self.dp.get_pair_dataframe(pair, self.timeframe)
-
-            if dataframe.empty:
-                logger.warning(f"Dataframe retrieval failed: {pair}")
-                return proposed_rate
-
-            # 統一ATR計算エンジンを使用してATR計算
-            atr_series = self.atr_engine.calculate_atr(dataframe, period=self.entry_length)
-            if atr_series.empty or pd.isna(atr_series.iloc[-1]):
-                logger.warning(f"ATR calculation failed {pair}")
-                return proposed_rate
-
-            current_atr = atr_series.iloc[-1]
-            current_close = dataframe["close"].iloc[-1]
-
-            # 統一エンジンでATR指値価格計算
-            atr_price = self.atr_engine.calculate_limit_price(
-                current_close, current_atr, side, self.entry_point
-            )
-
-            # データ検証
-            if pd.isna(atr_price) or current_atr <= 0:
-                logger.warning(f"Invalid ATR calculation {pair}: ATR={current_atr}")
-                return proposed_rate
-
-            logger.debug(f"ATR limit price {pair} {side}: {atr_price:.8f}")
-            return atr_price
+            return self.two_tier_strategy.calculate_entry_price(pair, side, proposed_rate)
 
         except Exception as e:
             logger.error(f"Custom entry price calculation error {pair}: {e}")
@@ -303,3 +312,60 @@ class ATRMLStrategy(IStrategy):
 
         # 利益確定・損切りはROIとstoplossに委譲
         return dataframe
+
+    def feature_engineering_expand_basic(self, dataframe: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """FreqAI基本特徴量生成（条件付き）"""
+        if not self.freqai_enabled:
+            return dataframe  # FreqAI無効時は何もしない
+
+        # FreqAI有効時のみ基本特徴量を追加
+        dataframe["%-pct-change"] = dataframe["close"].pct_change()
+        dataframe["%-raw_volume"] = dataframe["volume"]
+        dataframe["%-raw_price"] = dataframe["close"]
+
+        return dataframe
+
+    def set_freqai_targets(self, dataframe: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """FreqAI目標設定（条件付き）"""
+        if not self.freqai_enabled:
+            return dataframe  # FreqAI無効時は何もしない
+
+        try:
+            # ATRリターンベースのラベル生成
+            look_ahead = 24
+            future_return = dataframe["close"].pct_change(look_ahead).shift(-look_ahead)
+            dataframe["&-target"] = (future_return > 0.001).astype(int)
+
+        except Exception as e:
+            logger.warning(f"FreqAI target generation error: {e}")
+            # フォールバック: 中性ラベル
+            dataframe["&-target"] = 0
+
+        return dataframe
+
+    def get_strategy_info(self) -> dict:
+        """戦略情報の取得
+
+        Returns:
+            戦略情報辞書
+        """
+        return self.two_tier_strategy.get_strategy_info()
+
+    def leverage(
+        self,
+        pair: str,
+        current_time,
+        current_rate: float,
+        proposed_leverage: float,
+        max_leverage: float,
+        entry_tag: Optional[str],
+        side: str,
+        **kwargs,
+    ) -> float:
+        """
+        レバレッジ設定
+
+        Returns:
+            適用するレバレッジ倍率
+        """
+        return 1.0  # 現物取引相当
