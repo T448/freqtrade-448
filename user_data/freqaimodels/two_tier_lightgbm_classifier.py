@@ -1,6 +1,6 @@
 """TwoTier LightGBM Classifier for FreqAI
 
-2層戦略用のLightGBM二値分類モデル。
+2層戦略用のLightGBM Multi-target分類モデル。
 任意の1次戦略と組み合わせ可能な汎用的なML実装を提供する。
 """
 
@@ -11,13 +11,14 @@ import pandas as pd
 from lightgbm import LGBMClassifier
 
 from freqtrade.freqai.base_models.BaseClassifierModel import BaseClassifierModel
+from freqtrade.freqai.base_models.FreqaiMultiOutputClassifier import FreqaiMultiOutputClassifier
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 
 logger = logging.getLogger(__name__)
 
 
 class TwoTierLightGBMClassifier(BaseClassifierModel):
-    """2層戦略用LightGBM二値分類モデル
+    """2層戦略用LightGBM Multi-target分類モデル
 
     FreqAIフレームワークのBaseClassifierModelを継承し、
     任意の1次戦略と組み合わせ可能な汎用的なML実装を提供する。
@@ -25,54 +26,76 @@ class TwoTierLightGBMClassifier(BaseClassifierModel):
     特徴:
         - 1次戦略（ATRBreakout, MeanReversion等）とは独立
         - configで1次戦略と2次モデルを自由に組み合わせ可能
-        - Buy/Sell独立したモデルとして訓練・予測
+        - Buy/Sell独立したモデルとして訓練・予測（Multi-target対応）
+        - 各ターゲットごとに独立したestimatorを訓練
+
+    Multi-target対応:
+        - &-buy, &-sell の2つのラベルを使用
+        - 各ターゲットに対して独立したLightGBMモデルを訓練
+        - 予測結果も &-buy, &-sell として出力
 
     Note:
         - populate_indicators(): テクニカル指標の特徴量生成
         - set_freqai_targets(): TwoTierStrategyから呼ばれるため最小限実装
-        - fit(): LightGBMモデルの訓練
+        - fit(): FreqaiMultiOutputClassifierを使用したMulti-target訓練
     """
 
     def fit(self, data_dictionary: dict, dk: FreqaiDataKitchen, **kwargs) -> Any:
-        """LightGBMモデルの訓練
+        """LightGBM Multi-targetモデルの訓練
+
+        Buy/Sell独立したラベル（&-buy, &-sell）に対して、
+        それぞれ独立したLightGBMモデルを訓練する。
 
         Args:
             data_dictionary: 訓練・テストデータ、ラベル、ウェイトを含む辞書
             dk: 現在のペア/モデル用のDataKitchenオブジェクト
 
         Returns:
-            訓練済みLightGBMモデル
+            訓練済みFreqaiMultiOutputClassifier（複数のestimatorを含む）
         """
-        # テストセット設定
-        if self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1) == 0:
-            eval_set = None
-            test_weights = None
-        else:
-            eval_set = [
-                (
-                    data_dictionary["test_features"].to_numpy(),
-                    data_dictionary["test_labels"].to_numpy()[:, 0],
-                )
-            ]
-            test_weights = data_dictionary["test_weights"]
+        lgb = LGBMClassifier(**self.model_training_parameters)
 
-        X = data_dictionary["train_features"].to_numpy()
-        y = data_dictionary["train_labels"].to_numpy()[:, 0]
-        train_weights = data_dictionary["train_weights"]
+        X = data_dictionary["train_features"]
+        y = data_dictionary["train_labels"]
+        sample_weight = data_dictionary["train_weights"]
+
+        eval_weights = None
+        eval_sets = [None] * y.shape[1]
+
+        # テストセットの設定（各ターゲットごと）
+        if self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1) != 0:
+            eval_weights = [data_dictionary["test_weights"]]
+            eval_sets = [(None, None)] * data_dictionary["test_labels"].shape[1]
+            for i in range(data_dictionary["test_labels"].shape[1]):
+                eval_sets[i] = (
+                    data_dictionary["test_features"],
+                    data_dictionary["test_labels"].iloc[:, i],
+                )
 
         # 継続学習用の初期モデル取得
         init_model = self.get_init_model(dk.pair)
+        if init_model:
+            init_models = init_model.estimators_
+        else:
+            init_models = [None] * y.shape[1]
 
-        # LightGBMモデル訓練
-        model = LGBMClassifier(**self.model_training_parameters)
-        model.fit(
-            X=X,
-            y=y,
-            eval_set=eval_set,
-            sample_weight=train_weights,
-            eval_sample_weight=[test_weights] if test_weights is not None else None,
-            init_model=init_model,
-        )
+        # 各ターゲット用のfit_params準備
+        fit_params = []
+        for i in range(len(eval_sets)):
+            fit_params.append(
+                {
+                    "eval_set": eval_sets[i],
+                    "eval_sample_weight": eval_weights,
+                    "init_model": init_models[i],
+                }
+            )
+
+        # Multi-outputモデルの訓練
+        model = FreqaiMultiOutputClassifier(estimator=lgb)
+        thread_training = self.freqai_info.get("multitarget_parallel_training", False)
+        if thread_training:
+            model.n_jobs = y.shape[1]
+        model.fit(X=X, y=y, sample_weight=sample_weight, fit_params=fit_params)
 
         return model
 

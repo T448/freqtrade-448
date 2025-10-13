@@ -130,20 +130,17 @@ class TwoTierStrategy(IStrategy):
 
         # FreqAI予測の統合（ML有効時のみ）
         if self.is_ml_enabled:
-            # FreqAIモデルの特徴量生成 + 予測実行
+            # FreqAIモデルの特徴量生成 + Multi-target予測実行
+            # Multi-targetモデルは &-buy, &-sell の2つの予測カラムを生成
             dataframe = self.freqai.start(dataframe, metadata, self)
 
-            # &-prediction カラムを &-prediction_buy にリネーム
-            if "&-prediction" in dataframe.columns:
-                dataframe["&-prediction_buy"] = dataframe["&-prediction"]
-                dataframe.drop(columns=["&-prediction"], inplace=True)
-
-            # Note: マルチターゲット設定の場合、freqai_buy/freqai_sellとして
-            # 2つの独立したFreqAIインスタンスを使用する
-            # 現在はシングルモデル実装（Phase 4基本版）
-            # Buy予測をSellにもコピー（同じモデルを使用）
-            if "&-prediction_buy" in dataframe.columns:
-                dataframe["&-prediction_sell"] = dataframe["&-prediction_buy"]
+            # Multi-target予測カラムの存在確認
+            if "&-buy" not in dataframe.columns or "&-sell" not in dataframe.columns:
+                logger.warning(
+                    f"FreqAI Multi-target predictions not found for {metadata.get('pair', 'unknown')}. "
+                    "Expected columns: &-buy, &-sell. "
+                    "Make sure you're using TwoTierLightGBMClassifier (Multi-target model)."
+                )
 
         return dataframe
 
@@ -151,7 +148,7 @@ class TwoTierStrategy(IStrategy):
         """エントリーシグナル生成（ML予測による判定）
 
         両建て対応: buy/sellを独立して判定
-        - ML有効時: 各方向の予測=1の場合のみエントリー
+        - ML有効時: 各方向の予測=1の場合のみエントリー（Multi-target予測使用）
         - ML無効時: 常に両方向エントリー（指値価格があれば注文）
 
         Args:
@@ -162,9 +159,11 @@ class TwoTierStrategy(IStrategy):
             enter_long, enter_shortシグナルが設定されたDataFrame
         """
         if self.is_ml_enabled:
-            # ML予測が1の場合のみエントリー（buy/sell独立）
-            dataframe.loc[(dataframe["&-prediction_buy"] == 1), "enter_long"] = 1
-            dataframe.loc[(dataframe["&-prediction_sell"] == 1), "enter_short"] = 1
+            # Multi-target ML予測が1の場合のみエントリー（buy/sell独立）
+            # &-buy: Buy方向の予測（enter_longに使用）
+            # &-sell: Sell方向の予測（enter_shortに使用）
+            dataframe.loc[(dataframe["&-buy"] == 1), "enter_long"] = 1
+            dataframe.loc[(dataframe["&-sell"] == 1), "enter_short"] = 1
         else:
             # ML無効時は常に両方向エントリー（価格が有効な場合）
             # 価格有効性チェック: buy_price/sell_price > 0
@@ -191,11 +190,12 @@ class TwoTierStrategy(IStrategy):
             exit_long, exit_shortシグナルが設定されたDataFrame
         """
         if self.is_ml_enabled:
-            # ロング決済: sell予測=1の場合
-            dataframe.loc[(dataframe["&-prediction_sell"] == 1), "exit_long"] = 1
+            # Multi-target予測による決済判定
+            # ロング決済: sell予測=1の場合（売りシグナルでロング決済）
+            dataframe.loc[(dataframe["&-sell"] == 1), "exit_long"] = 1
 
-            # ショート決済: buy予測=1の場合
-            dataframe.loc[(dataframe["&-prediction_buy"] == 1), "exit_short"] = 1
+            # ショート決済: buy予測=1の場合（買いシグナルでショート決済）
+            dataframe.loc[(dataframe["&-buy"] == 1), "exit_short"] = 1
 
         # ML無効時は明示的な決済シグナルなし（ROI/Stoplossのみ）
 
@@ -267,10 +267,10 @@ class TwoTierStrategy(IStrategy):
         return proposed_rate
 
     def set_freqai_targets(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """FreqAI訓練用ラベル生成
+        """FreqAI訓練用ラベル生成（Multi-target対応）
 
         1次戦略のリターン計算結果をラベル化する。
-        buy/sell独立したラベルを生成（両建て対応）。
+        buy/sell独立したラベルを生成（Multi-target対応）。
         リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）。
 
         Args:
@@ -278,13 +278,14 @@ class TwoTierStrategy(IStrategy):
             metadata: ペア情報
 
         Returns:
-            &-targetカラムが追加されたDataFrame
+            &-buy, &-sellカラムが追加されたDataFrame
 
         Note:
             - 1次戦略のcalculate_prices()で指値価格を計算
             - 1次戦略のcalculate_returns()で約定シミュレーションを実行
             - execution_mode (chase/one_candle) に応じて異なるラベルが生成される
-            - FreqAIフレームワークが&-targetカラムを訓練ラベルとして使用
+            - FreqAIフレームワークが&-buy, &-sellカラムを訓練ラベルとして使用
+            - Multi-targetモデルが各ラベルに対して独立したestimatorを訓練
         """
         # 1次戦略: 指値価格計算（calculate_returns()の前提条件）
         dataframe = self.primary_strategy.calculate_prices(dataframe)
@@ -292,16 +293,18 @@ class TwoTierStrategy(IStrategy):
         # 1次戦略: buy/sellそれぞれのリターン計算
         buy_return, sell_return = self.primary_strategy.calculate_returns(dataframe)
 
+        # Multi-target labels: buy/sell独立したラベル生成
         # リターン > 0 で成功ラベル（1）、それ以外は失敗ラベル（0）
-        # 現在はシングルモデル実装のため、buyラベルのみ使用
-        # マルチターゲット実装時はidentifierで判定する
-        dataframe["&-target"] = (buy_return > 0).astype(int)
+        dataframe["&-buy"] = (buy_return > 0).astype(int)
+        dataframe["&-sell"] = (sell_return > 0).astype(int)
 
         # デバッグ用: ラベル分布をログ出力
-        positive_ratio = dataframe["&-target"].mean()
+        buy_positive_ratio = dataframe["&-buy"].mean()
+        sell_positive_ratio = dataframe["&-sell"].mean()
         logger.info(
             f"Label generation for {metadata.get('pair', 'unknown')}: "
-            f"positive_ratio={positive_ratio:.3f}, "
+            f"buy_positive_ratio={buy_positive_ratio:.3f}, "
+            f"sell_positive_ratio={sell_positive_ratio:.3f}, "
             f"total_samples={len(dataframe)}"
         )
 
