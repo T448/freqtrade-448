@@ -135,7 +135,7 @@ assert all_nan or all_zero  # すべてNaNまたはすべて0
 
 ---
 
-## 3. Phase 4 Multi-target Architecture (Phase 4) 🔴 **Critical**
+## 3. Phase 4 Multi-target Architecture (Phase 4) 🔴 **Critical** ✅ **調査完了**
 
 ### 背景
 
@@ -144,179 +144,134 @@ Phase 4の検証レポートで**最大の問題**として指摘されている
 - 現状: Single FreqAI model (基本実装、40%完成)
 - 仕様: Dual FreqAI instances (Buy/Sell独立モデル)
 
-### 現在の状況
+### 調査完了 ✅ 2025-10-13
 
-**実装されているもの (Single Model)**:
+**調査結果**: FreqTradeは既に**Multi-target機能を完全サポート**
 
-```python
-class TwoTierStrategy:
-    def populate_any_indicators(self, metadata):
-        # Single FreqAI model
-        dataframe = self.freqai.start(dataframe, metadata, self)
-        # predictions列を使用
+詳細な調査結果と実装計画は **`PHASE4_IMPLEMENTATION_PLAN.md`** を参照。
+
+### 決定した実装方針
+
+**✅ Option B: Single Model Multi-Target**
+
+```
+Single FreqAI Instance
+└── LightGBMClassifierMultiTarget
+    ├── Estimator 1: Buy signals (&-buy)
+    └── Estimator 2: Sell signals (&-sell)
 ```
 
-**Phase 4仕様 (Dual Models)**:
+### 主要な発見
 
-```json
-{
-  "freqai_buy": {
-    "identifier": "buy_model_v1",
-    "label_period_candles": 24,
-    // Buy model config
-  },
-  "freqai_sell": {
-    "identifier": "sell_model_v1",
-    "label_period_candles": 12,
-    // Sell model config
-  }
-}
-```
+1. **FreqTradeのMulti-target実装**:
+   - `LightGBMClassifierMultiTarget`
+   - `XGBoostRegressorMultiTarget`
+   - `CatboostClassifierMultiTarget`
+   など、複数のMulti-targetモデルが既に実装済み
 
-### 必要な実装
+2. **内部実装** (`FreqaiMultiOutputClassifier`):
+   - 各ターゲットごとに独立したestimatorを訓練
+   - 並列処理可能
+   - sklearn互換のインターフェース
 
-1. **Config構造の変更**
-   - `freqai` → `freqai_buy` / `freqai_sell`
-   - 各モデルで異なるidentifierとlabel_period
+3. **Config構造**:
+   - `freqai_buy` / `freqai_sell` セクションは**不要**
+   - 単一の`freqai`セクションでOK
 
-2. **TwoTierStrategyの変更**
-   - Dual FreqAI instancesの初期化
-   - Buy用とSell用のpredict呼び出し
-   - 異なるlabel生成ロジック
-
-3. **テストの追加**
-   - Dual model configuration tests
-   - Independent prediction tests
-   - Identifier-based label generation tests
-
-### 重要な調査項目 🔍
-
-**Question 1: FreqTradeはdual FreqAI instancesをサポートしているか?**
-
-- FreqAIの内部実装を調査
-- 複数のFreqAIインスタンスを同時に使用可能か?
-- 既存の実装例はあるか?
-
-**Question 2: Configの設計方針**
-
-- `freqai_buy`/`freqai_sell` として分離すべきか?
-- それとも `freqai.targets: [buy, sell]` のような構造か?
-- FreqTradeの標準的なパターンは?
-
-**Question 3: 代替アーキテクチャ**
-Single modelで Buy/Sell を multi-target として学習する方法:
-
-```python
-# Alternative: Single model with multi-target
-labels = {
-    "buy": buy_labels,
-    "sell": sell_labels
-}
-predictions = model.predict()  # → {buy: prob, sell: prob}
-```
-
-### 選択肢
-
-**Option A: Full Dual-Instance Implementation**
-
-- メリット:
-  - Phase 4仕様に完全準拠
-  - Buy/Sellの完全な独立性
-  - 異なるパラメータ・特徴量が使用可能
-- デメリット:
-  - 実装コスト大 (6-9時間)
-  - FreqTradeのサポート状況が不明
-  - テスト・デバッグコスト増
-
-**Option B: Single Model Multi-Target**
-
-- メリット:
-  - 実装コスト小 (2-3時間)
-  - FreqTradeの標準的なパターン
-  - デバッグが容易
-- デメリット:
-  - Phase 4仕様から逸脱
-  - Buy/Sellで同じ特徴量を使用
-  - 柔軟性が低い
-
-**Option C: Deferred Implementation**
-
-- メリット:
-  - 他のタスクを優先できる
-  - バックテストでML-off modeを先に検証
-- デメリット:
-  - Phase 4が不完全なまま
-
-### 推奨アプローチ
-
-**Step 1: 調査 (1-2時間)**
-
-1. FreqTradeのFreqAI実装を読む
-2. Dual instance supportを確認
-3. 既存の実装例を探す
-
-**Step 2: 設計判断**
-
-- FreqTradeがdual instanceをサポート → Option A
-- サポートしない → Option B または Option C
-
-**Step 3: 実装**
-
-- 決定したoptionに基づいて実装
+4. **ラベル命名規則**:
+   - `&-buy`: Buy signal label
+   - `&-sell`: Sell signal label
+   - 予測カラムも同じ名前で自動生成
 
 ### 実装への影響
 
 - 優先度: **High** (Phase 4のコア機能)
 - 影響範囲:
-  - config.json
-  - TwoTierStrategy
-  - FreqAI integration
-  - Tests
-- 所要時間:
-  - Option A: 6-9時間
-  - Option B: 2-3時間
-  - Option C: 0時間 (defer)
+  - FreqAIモデル: `LightGBMClassifierMultiTarget`を継承
+  - TwoTierStrategy: Multi-targetラベル生成
+  - Config: 単一の`freqai`セクション
+  - Tests: Multi-target予測テスト
+- **所要時間: 3.5時間** (Dual-instanceの6-9時間から大幅削減)
+
+### PHASE4_VERIFICATION_REPORTとの差異
+
+| 要素 | PHASE4_VERIFICATION_REPORT | 実装 |
+|------|---------------------------|------|
+| Config構造 | `freqai_buy` / `freqai_sell` | `freqai` (より簡潔) |
+| Identifiers | `_buy` / `_sell` サフィックス | 単一identifier |
+| FreqAIインスタンス | `self.freqai_buy` / `self.freqai_sell` | `self.freqai` |
+| ラベル名 | `&-target` | `&-buy`, `&-sell` (明示的) |
+| 予測カラム名 | `&-prediction_buy` / `&-prediction_sell` | `&-buy` / `&-sell` (一貫性) |
+
+**結論**: 実装はより簡潔で、FreqTradeの標準パターンに準拠
 
 ### 決定事項
 
-- [x] 実装方針を決定 (Option A/B/C)
-  - **決定: Phase 4仕様を満たせる実装であれば何でもOK** ✅
-  - 方針: まずFreqTradeのFreqAI実装を調査し、実装可能な方法を選択
-- [ ] FreqTradeのFreqAI実装を調査
-- [ ] Dual instance supportを確認
-- [ ] 具体的な実装方法を決定 (調査結果に基づく)
-- [ ] 決定に基づいて実装
+- [x] 実装方針を決定 ✅ **Option B - Single Model Multi-Target**
+- [x] FreqTradeのFreqAI実装を調査 ✅
+- [x] Multi-target supportを確認 ✅
+- [x] 具体的な実装方法を決定 ✅
+- [ ] 実装 (詳細は`PHASE4_IMPLEMENTATION_PLAN.md`参照)
 - [ ] Phase 4テストを追加
 
+### 次のステップ
+
+実装の詳細は **`PHASE4_IMPLEMENTATION_PLAN.md`** を参照してください。
+
+実装タスク (合計: 3.5時間):
+1. FreqAIモデル修正 (15分)
+2. TwoTierStrategy修正 (1.5時間)
+3. Config更新 (15分)
+4. テスト追加 (1時間)
+5. バックテスト実行 (30分)
+
 ---
 
-## 優先順位サマリー
+## 優先順位サマリー（更新済み）
 
-| 項目 | 優先度 | 所要時間 | ブロッキング |
-|------|--------|----------|--------------|
-| 3. Phase 4 Multi-target | 🔴 High | 6-9時間 | ML-on backtest |
-| 2. 最後N行の動作 | 🟡 Medium | 1-2時間 | 一部のテスト |
-| 1. Return計算方法 | 🟢 Low | 30分 | 1つのテスト |
+| 項目 | 優先度 | 所要時間 | ブロッキング | 状態 |
+|------|--------|----------|--------------|------|
+| 3. Phase 4 Multi-target | 🔴 High | **3.5時間** ✅ | ML-on backtest | ✅ 調査完了 |
+| 2. 最後N行の動作 | 🟡 Medium | 1-2時間 | 一部のテスト | ✅ 方針決定済み |
+| 1. Return計算方法 | 🟢 Low | 30分 | 1つのテスト | ✅ 方針決定済み |
 
-## 推奨実装順序
+## 推奨実装順序（更新済み）
 
-1. **Item 2 (最後N行の動作)** を先に調査・修正
+すべての判断が完了したため、実装の優先順位を更新:
+
+1. **Item 1 (Return計算)** - 最初に実装 ✅
+   - 理由: 所要時間が最短（30分）
+   - 決定済み: `.shift(-n)` を使用
+   - すぐに完了可能
+
+2. **Item 2 (最後N行の動作)** - 次に実装 ✅
    - 理由: データリーク検出の正確性に関わる
-   - テスト失敗の原因を明確化
+   - 決定済み: NaN/0統一
+   - 調査込みで1-2時間
 
-2. **Item 3 (Phase 4 Multi-target)** の調査を開始
-   - 理由: 実装コストが大きいため早期に方針決定
-   - ML-on backtestのブロッカー
+3. **Item 3 (Phase 4 Multi-target)** - 最後に実装 ✅
+   - 理由: 実装コスト3.5時間（当初見積の6-9時間から削減）
+   - 決定済み: Single Model Multi-Target (Option B)
+   - 詳細な実装計画あり (`PHASE4_IMPLEMENTATION_PLAN.md`)
 
-3. **Item 1 (Return計算)** は最後
-   - 理由: 機能的な影響が小さい
-   - テスト設計の問題の可能性が高い
+**合計所要時間**: 5-6時間（当初見積の8.5-12時間から大幅削減）
 
 ---
 
-## Next Steps
+## Next Steps ✅ 完了
 
-1. このドキュメントをレビュー
-2. 各項目の決定を行う
-3. 決定事項を `REMAINING_TASKS_CHECKLIST.md` に反映
-4. 実装を開始
+1. ✅ このドキュメントをレビュー
+2. ✅ 各項目の決定を行う
+3. ✅ 決定事項を `REMAINING_TASKS_CHECKLIST.md` に反映
+4. 🔄 実装を開始
+
+**すべての判断が完了しました！** 🎉
+
+実装の準備が整いました:
+- Item 1: Return計算方法 → `.shift(-n)` 使用
+- Item 2: 最後N行の動作 → NaN/0統一
+- Item 3: Phase 4 Multi-target → Single Model Multi-Target
+
+詳細な実装計画は以下を参照:
+- `REMAINING_TASKS_CHECKLIST.md` - 実装タスク一覧
+- `PHASE4_IMPLEMENTATION_PLAN.md` - Phase 4詳細実装計画

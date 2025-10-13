@@ -470,65 +470,66 @@ pytest tests/strategy/two_tier/test_strategy_factory.py::test_load_primary_atr_b
 
 ## Priority 5: Deferred (判断待ち)
 
-### 🔄 Task 5.1: Phase 4 Multi-target実装 🆕
+### ✅ Task 5.1: Phase 4 Multi-target実装 🆕
 
 **参照**:
 
 - `PHASE4_VERIFICATION_REPORT.md`
 - `REMAINING_TASKS_DECISIONS.md` の Item 3
+- `PHASE4_IMPLEMENTATION_PLAN.md` ✅ **調査完了**
 
-**決定事項**: ✅ **Phase 4仕様を満たせる実装であれば何でもOK**
+**調査完了**: ✅ 2025-10-13
 
-- 方針: まずFreqTradeのFreqAI実装を調査し、実装可能な方法を選択
+**決定事項**: ✅ **Option B - Single Model Multi-Target**
 
-**ステップ1: FreqAI実装の調査** (1-2時間)
+**調査結果**:
 
-調査項目:
+- ✅ FreqTradeは既にMulti-target機能を完全サポート
+- ✅ `LightGBMClassifierMultiTarget`など、複数のMulti-targetモデルが実装済み
+- ✅ Dual-instance (freqai_buy/freqai_sell) アプローチは不要
+- ✅ 実装コスト: **3.5時間** (Dual-instanceの6-9時間から大幅削減)
 
-1. FreqTradeのFreqAI実装を読む
-2. Dual FreqAI instance supportの確認
-3. 既存の実装例を探す
-4. Multi-targetモデルのサポート確認
+**実装方針**:
 
-**ステップ2: 実装方法の決定** (調査結果に基づく)
+```
+Single FreqAI Instance
+└── LightGBMClassifierMultiTarget
+    ├── Estimator 1: Buy signals (&-buy)
+    └── Estimator 2: Sell signals (&-sell)
+```
 
-選択肢:
+**実装タスク** (合計: 3.5時間):
 
-- **Option A**: Full Dual-Instance Implementation (6-9時間)
-  - FreqTradeがdual instanceをサポートしている場合
-  - `freqai_buy` / `freqai_sell` 独立実装
+1. **FreqAIモデル修正** (15分)
+   - [ ] `LightGBMClassifierMultiTarget`を継承
 
-- **Option B**: Single Model Multi-Target (2-3時間)
-  - FreqTradeが標準的なmulti-targetをサポートしている場合
-  - 単一モデルで Buy/Sell を同時学習
+2. **TwoTierStrategy修正** (1.5時間)
+   - [ ] `set_freqai_targets()`: Multi-targetラベル生成 (`&-buy`, `&-sell`)
+   - [ ] `populate_indicators()`: 予測カラム確認処理追加
+   - [ ] `populate_entry_trend()`: `&-buy` / `&-sell` 使用
+   - [ ] `populate_exit_trend()`: `&-buy` / `&-sell` 使用
 
-- **Option C**: カスタム実装
-  - 必要に応じてFreqTradeを拡張
+3. **Config更新** (15分)
+   - [ ] `model_name`を`TwoTierLightGBMClassifier`に設定
 
-**ステップ3: 実装** (決定した方法に基づく)
+4. **テスト追加** (1時間)
+   - [ ] Multi-targetラベル生成テスト
+   - [ ] 予測カラム存在確認テスト
 
-実装内容:
-
-1. Config構造の変更
-2. TwoTierStrategyの変更
-3. FreqAI integration
-4. テストの追加
-
-**所要時間**: 2-9時間 (実装方法による)
+5. **バックテスト実行** (30分)
+   - [ ] ML-on modeでバックテスト実行
 
 **検証方法**:
 
 ```bash
-# Phase 4テストを実行
-pytest tests/strategy/two_tier/ -v -k phase4
+# テスト実行
+pytest tests/strategy/two_tier/test_two_tier_multimodel.py -v
+
+# バックテスト実行
+freqtrade backtesting --strategy TwoTierStrategy --config config_two_tier_ml_on.json
 ```
 
-- [ ] FreqTradeのFreqAI実装を調査
-- [ ] Dual instance / Multi-target supportを確認
-- [ ] 実装方法を決定 (Option A/B/C)
-- [ ] 決定した方法で実装
-- [ ] Phase 4テストを追加
-- [ ] テストで検証
+**詳細**: `PHASE4_IMPLEMENTATION_PLAN.md` を参照
 
 ---
 
