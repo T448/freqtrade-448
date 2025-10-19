@@ -5,10 +5,7 @@ from pandas import DataFrame
 
 from freqtrade.persistence.trade_model import Order, Trade
 from freqtrade.strategy import IStrategy
-
-
-ATR_TIME_PERIOD = 14
-ATR_ENTRY_POINT = 0.5
+from freqtrade.strategy.parameters import DecimalParameter, IntParameter
 
 
 class AtrLimitStrategy2(IStrategy):
@@ -33,6 +30,15 @@ class AtrLimitStrategy2(IStrategy):
         "stoploss_on_exchange": False,
     }
 
+    # 最適化パラメータ
+    # Long用パラメータ
+    buy_atr_timeperiod = IntParameter(7, 20, default=14, space="buy")
+    buy_atr_entry_point = DecimalParameter(0.01, 1, decimals=2, default=0.5, space="buy")
+
+    # Short用パラメータ
+    sell_atr_timeperiod = IntParameter(7, 20, default=14, space="sell")
+    sell_atr_entry_point = DecimalParameter(0.01, 1, decimals=2, default=0.5, space="sell")
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
         特徴量計算
@@ -45,8 +51,17 @@ class AtrLimitStrategy2(IStrategy):
         Returns:
             DataFrame: ohlcv、特徴量を含むDataFrame
         """
-        dataframe["atr"] = talib.ATR(
-            dataframe["high"], dataframe["low"], dataframe["close"], timeperiod=ATR_TIME_PERIOD
+        dataframe["atr_buy"] = talib.ATR(
+            dataframe["high"],
+            dataframe["low"],
+            dataframe["close"],
+            timeperiod=self.buy_atr_timeperiod.value,
+        )
+        dataframe["atr_sell"] = talib.ATR(
+            dataframe["high"],
+            dataframe["low"],
+            dataframe["close"],
+            timeperiod=self.sell_atr_timeperiod.value,
         )
 
         return dataframe
@@ -63,19 +78,18 @@ class AtrLimitStrategy2(IStrategy):
         Returns:
             DataFrame: _description_
         """
-        atr = dataframe["atr"]
+        atr_buy = dataframe["atr_buy"]
+        atr_sell = dataframe["atr_sell"]
 
         dataframe.loc[
-            (dataframe["low"] < dataframe["close"] - atr * ATR_ENTRY_POINT),
+            (dataframe["low"] < dataframe["close"] - atr_buy * self.buy_atr_entry_point.value),
             ["enter_long", "enter_tag"],
         ] = (1, "atr_long")
 
         dataframe.loc[
-            (dataframe["high"] > dataframe["close"] + atr * ATR_ENTRY_POINT),
+            (dataframe["high"] > dataframe["close"] + atr_sell * self.sell_atr_entry_point.value),
             ["enter_short", "enter_tag"],
         ] = (1, "atr_short")
-
-        print(dataframe)
 
         return dataframe
 
@@ -91,15 +105,16 @@ class AtrLimitStrategy2(IStrategy):
         Returns:
             DataFrame: _description_
         """
-        atr = dataframe["atr"]
+        atr_buy = dataframe["atr_buy"]
+        atr_sell = dataframe["atr_sell"]
 
         dataframe.loc[
-            (dataframe["low"] < dataframe["close"] - atr * ATR_ENTRY_POINT),
+            (dataframe["low"] < dataframe["close"] - atr_buy * self.buy_atr_entry_point.value),
             ["exit_long", "exit_tag"],
         ] = (1, "atr_exit_long")
 
         dataframe.loc[
-            (dataframe["high"] > dataframe["close"] + atr * ATR_ENTRY_POINT),
+            (dataframe["high"] > dataframe["close"] + atr_sell * self.sell_atr_entry_point.value),
             ["exit_short", "exit_tag"],
         ] = (1, "atr_exit_short")
 
@@ -211,12 +226,13 @@ class AtrLimitStrategy2(IStrategy):
             _type_: _description_
         """
 
-        atr = dataframe["atr"]
+        atr_buy = dataframe["atr_buy"]
+        atr_sell = dataframe["atr_sell"]
 
         if side == "long":
-            new_entryprice = dataframe["close"] - atr * ATR_ENTRY_POINT
+            new_entryprice = dataframe["close"] - atr_buy * self.buy_atr_entry_point.value
         elif side == "short":
-            new_entryprice = dataframe["close"] + atr * ATR_ENTRY_POINT
+            new_entryprice = dataframe["close"] + atr_sell * self.sell_atr_entry_point.value
         else:
             new_entryprice = proposed_rate
 

@@ -15,6 +15,8 @@ user_data/backtest_results/*
 user_data/data/*
 user_data/plot/*
 user_data/hyperopts/*
+user_data/hyperopt_results/*
+user_data/hyperopt.lock
 freqtrade-plot.html
 freqtrade-profit-plot.html
 freqtrade/rpc/api_server/ui/*
