@@ -34,6 +34,17 @@ class AtrLimitStrategy2(IStrategy):
     }
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """
+        特徴量計算
+        指値価格の算出に使用する
+
+        Args:
+            dataframe (DataFrame): ohlcvを含むDataFrame
+            metadata (dict): _description_
+
+        Returns:
+            DataFrame: ohlcv、特徴量を含むDataFrame
+        """
         dataframe["atr"] = talib.ATR(
             dataframe["high"], dataframe["low"], dataframe["close"], timeperiod=ATR_TIME_PERIOD
         )
@@ -41,6 +52,17 @@ class AtrLimitStrategy2(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """
+        売買シグナルを生成する
+        指値注文の場合も必要で、指値注文が刺さることを条件とする
+
+        Args:
+            dataframe (DataFrame): _description_
+            metadata (dict): _description_
+
+        Returns:
+            DataFrame: _description_
+        """
         atr = dataframe["atr"]
 
         dataframe.loc[
@@ -58,6 +80,17 @@ class AtrLimitStrategy2(IStrategy):
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """
+        決済シグナルを生成する
+        指値注文による決済の場合も必要で、指値注文が刺さることを条件とする
+
+        Args:
+            dataframe (DataFrame): _description_
+            metadata (dict): _description_
+
+        Returns:
+            DataFrame: _description_
+        """
         atr = dataframe["atr"]
 
         dataframe.loc[
@@ -82,6 +115,21 @@ class AtrLimitStrategy2(IStrategy):
         side: str,
         **kwargs,
     ) -> float:
+        """
+        指値価格を算出する
+
+        Args:
+            pair (str): _description_
+            trade (Trade | None): _description_
+            current_time (datetime): _description_
+            proposed_rate (float): _description_
+            entry_tag (str | None): _description_
+            side (str): _description_
+
+        Returns:
+            float: _description_
+        """
+
         return self.atr_limit_price(pair=pair, proposed_rate=proposed_rate, side=side)
 
     def custom_exit_price(
@@ -94,6 +142,20 @@ class AtrLimitStrategy2(IStrategy):
         exit_tag: str | None,
         **kwargs,
     ):
+        """
+        指値価格を算出する
+
+        Args:
+            pair (str): _description_
+            trade (Trade): _description_
+            current_time (datetime): _description_
+            proposed_rate (float): _description_
+            current_profit (float): _description_
+            exit_tag (str | None): _description_
+
+        Returns:
+            _type_: _description_
+        """
         side = "short" if trade.is_short else "long"
 
         return self.atr_limit_price(pair=pair, proposed_rate=proposed_rate, side=side)
@@ -101,11 +163,35 @@ class AtrLimitStrategy2(IStrategy):
     def check_entry_timeout(
         self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs
     ) -> bool:
+        """
+        指値注文のタイムアウト
+
+        Args:
+            pair (str): _description_
+            trade (Trade): _description_
+            order (Order): _description_
+            current_time (datetime): _description_
+
+        Returns:
+            bool: _description_
+        """
         return self.check_timeout(order, current_time)
 
     def check_exit_timeout(
         self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs
     ):
+        """
+        指値決済注文のタイムアウト
+
+        Args:
+            pair (str): _description_
+            trade (Trade): _description_
+            order (Order): _description_
+            current_time (datetime): _description_
+
+        Returns:
+            _type_: _description_
+        """
         return self.check_timeout(order, current_time)
 
     def atr_limit_price(
@@ -117,6 +203,13 @@ class AtrLimitStrategy2(IStrategy):
         dataframe, _last_updated = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.timeframe
         )
+        """
+        指値価格の算出
+        long,shortの分岐は内部で行う
+
+        Returns:
+            _type_: _description_
+        """
 
         atr = dataframe["atr"]
 
@@ -131,9 +224,16 @@ class AtrLimitStrategy2(IStrategy):
 
     def check_timeout(self, order: Order, current_time: datetime) -> bool:
         """
-        指値注文を次の足でキャンセルする例。
-        たとえば5分足なら、発注から5分後に未約定ならキャンセル。
+        次のローソク足で注文が刺さっていない場合タイムアウトでキャンセルする
+
+        Args:
+            order (Order): _description_
+            current_time (datetime): _description_
+
+        Returns:
+            bool: _description_
         """
+
         # timeframeを設定ファイルやstrategyから取得
         tf_str = self.timeframe  # 例: '5m', '1h', '1d'
 
