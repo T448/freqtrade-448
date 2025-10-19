@@ -12,24 +12,22 @@
     },
     "buy": {
       "atr_period": 13,
-      "buy_atr_entry_point": 0.353,
-      "exit_short_atr_entry_point": 0.705
+      "entry_atr_coefficient": 0.247
     },
     "sell": {
-      "sell_atr_entry_point": 0.828,
-      "short_atr_entry_point": 0.136
+      "exit_atr_coefficient": 0.486
     },
     "protection": {},
     "roi": {
-      "0": 0.099,
-      "60": 0.078,
-      "231": 0.047,
-      "413": 0
+      "0": 0.334,
+      "65": 0.117,
+      "118": 0.017,
+      "185": 0
     },
     "stoploss": {
-      "stoploss": -0.22
+      "stoploss": -0.279
     }
   },
   "ft_stratparam_v": 1,
-  "export_time": "2025-10-19 14:06:10.266968+00:00"
+  "export_time": "2025-10-19 14:19:47.801757+00:00"
 }
