@@ -7,10 +7,7 @@ from pandas import DataFrame
 
 from freqtrade.persistence.trade_model import Order, Trade
 from freqtrade.strategy import IStrategy
-from freqtrade.strategy.parameters import DecimalParameter
-
-
-ATR_TIMEPERIOD = 14
+from freqtrade.strategy.parameters import DecimalParameter, IntParameter
 
 
 class AtrLimitStrategy(IStrategy):
@@ -44,6 +41,9 @@ class AtrLimitStrategy(IStrategy):
     short_atr_entry_point = DecimalParameter(0.01, 1, decimals=3, default=0.5, space="sell")
     exit_short_atr_entry_point = DecimalParameter(0.01, 1, decimals=3, default=0.5, space="buy")
 
+    # ATR期間の最適化パラメータ
+    atr_period = IntParameter(10, 30, default=20, space="buy", optimize=True)
+
     def __init__(self, config: dict) -> None:
         super().__init__(config)
 
@@ -75,12 +75,14 @@ class AtrLimitStrategy(IStrategy):
         Returns:
             DataFrame: ohlcv、特徴量を含むDataFrame
         """
-        dataframe["atr"] = talib.ATR(
-            dataframe["high"],
-            dataframe["low"],
-            dataframe["close"],
-            timeperiod=ATR_TIMEPERIOD,
-        )
+        # 全てのATR期間について事前計算（hyperopt用）
+        for period in self.atr_period.range:
+            dataframe[f"atr_{period}"] = talib.ATR(
+                dataframe["high"],
+                dataframe["low"],
+                dataframe["close"],
+                timeperiod=period,
+            )
 
         return dataframe
 
@@ -96,7 +98,8 @@ class AtrLimitStrategy(IStrategy):
         Returns:
             DataFrame: _description_
         """
-        atr = dataframe["atr"]
+        # 最適化されたATR期間の値を使用
+        atr = dataframe[f"atr_{self.atr_period.value}"]
 
         dataframe.loc[
             (dataframe["low"] < dataframe["close"] - atr * self.buy_atr_entry_point.value),
@@ -122,7 +125,8 @@ class AtrLimitStrategy(IStrategy):
         Returns:
             DataFrame: _description_
         """
-        atr = dataframe["atr"]
+        # 最適化されたATR期間の値を使用
+        atr = dataframe[f"atr_{self.atr_period.value}"]
 
         dataframe.loc[
             (dataframe["low"] < dataframe["close"] - atr * self.sell_atr_entry_point.value),
@@ -231,9 +235,6 @@ class AtrLimitStrategy(IStrategy):
         proposed_rate: float,
         side: str,
     ) -> float:
-        dataframe, _last_updated = self.dp.get_analyzed_dataframe(
-            pair=pair, timeframe=self.timeframe
-        )
         """
         指値価格の算出
         long,shortの分岐は内部で行う
@@ -241,8 +242,12 @@ class AtrLimitStrategy(IStrategy):
         Returns:
             _type_: _description_
         """
+        dataframe, _last_updated = self.dp.get_analyzed_dataframe(
+            pair=pair, timeframe=self.timeframe
+        )
 
-        atr = dataframe["atr"].iat[-1]
+        # 最適化されたATR期間の値を使用
+        atr = dataframe[f"atr_{self.atr_period.value}"].iat[-1]
         close = dataframe["close"].iat[-1]
 
         if side == "long":
