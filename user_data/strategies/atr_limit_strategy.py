@@ -33,13 +33,15 @@ class AtrLimitStrategy(IStrategy):
     }
 
     # 最適化パラメータ
-    # Long用パラメータ
-    buy_atr_entry_point = DecimalParameter(0.01, 1, decimals=3, default=0.5, space="buy")
-    sell_atr_entry_point = DecimalParameter(0.01, 1, decimals=3, default=0.5, space="sell")
+    # エントリー用係数（ロング・ショート共通）
+    entry_atr_coefficient = DecimalParameter(
+        0.01, 1, decimals=3, default=0.5, space="buy", optimize=True
+    )
 
-    # Short用パラメータ
-    short_atr_entry_point = DecimalParameter(0.01, 1, decimals=3, default=0.5, space="sell")
-    exit_short_atr_entry_point = DecimalParameter(0.01, 1, decimals=3, default=0.5, space="buy")
+    # エグジット用係数（ロング・ショート共通）
+    exit_atr_coefficient = DecimalParameter(
+        0.01, 1, decimals=3, default=0.5, space="sell", optimize=True
+    )
 
     # ATR期間の最適化パラメータ
     atr_period = IntParameter(10, 30, default=20, space="buy", optimize=True)
@@ -51,17 +53,12 @@ class AtrLimitStrategy(IStrategy):
             with open("user_data/strategies/atr_limit_strategy.json") as f:
                 results = json.load(f)
                 # パラメータ上書き
-                self.buy_atr_entry_point._value = results["params"]["buy"]["buy_atr_entry_point"]
-                self.sell_atr_entry_point._value = results["params"]["sell"]["sell_atr_entry_point"]
-                self.short_atr_entry_point._value = results["params"]["sell"][
-                    "short_atr_entry_point"
-                ]
-                self.exit_short_atr_entry_point._value = results["params"]["buy"][
-                    "exit_short_atr_entry_point"
-                ]
-        except FileNotFoundError as e:
-            print(e)
-            pass
+                self.entry_atr_coefficient.value = results["params"]["buy"]["entry_atr_coefficient"]
+                self.exit_atr_coefficient.value = results["params"]["sell"]["exit_atr_coefficient"]
+                self.atr_period.value = results["params"]["buy"]["atr_period"]
+        except (FileNotFoundError, KeyError) as e:
+            print(f"Failed to load hyperopt results: {e}")
+            print("Using default parameter values")
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
@@ -101,13 +98,15 @@ class AtrLimitStrategy(IStrategy):
         # 最適化されたATR期間の値を使用
         atr = dataframe[f"atr_{self.atr_period.value}"]
 
+        # ロングエントリー: 下落時に指値買い
         dataframe.loc[
-            (dataframe["low"] < dataframe["close"] - atr * self.buy_atr_entry_point.value),
+            (dataframe["low"] < dataframe["close"] - atr * self.entry_atr_coefficient.value),
             ["enter_long", "enter_tag"],
         ] = (1, "atr_long")
 
+        # ショートエントリー: 上昇時に指値売り
         dataframe.loc[
-            (dataframe["high"] > dataframe["close"] + atr * self.short_atr_entry_point.value),
+            (dataframe["high"] > dataframe["close"] + atr * self.entry_atr_coefficient.value),
             ["enter_short", "enter_tag"],
         ] = (1, "atr_short")
 
@@ -128,13 +127,15 @@ class AtrLimitStrategy(IStrategy):
         # 最適化されたATR期間の値を使用
         atr = dataframe[f"atr_{self.atr_period.value}"]
 
+        # ロングエグジット: さらに下落時に決済
         dataframe.loc[
-            (dataframe["low"] < dataframe["close"] - atr * self.sell_atr_entry_point.value),
+            (dataframe["low"] < dataframe["close"] - atr * self.exit_atr_coefficient.value),
             ["exit_long", "exit_tag"],
         ] = (1, "atr_exit_long")
 
+        # ショートエグジット: さらに上昇時に決済
         dataframe.loc[
-            (dataframe["high"] > dataframe["close"] + atr * self.exit_short_atr_entry_point.value),
+            (dataframe["high"] > dataframe["close"] + atr * self.exit_atr_coefficient.value),
             ["exit_short", "exit_tag"],
         ] = (1, "atr_exit_short")
 
@@ -250,10 +251,11 @@ class AtrLimitStrategy(IStrategy):
         atr = dataframe[f"atr_{self.atr_period.value}"].iat[-1]
         close = dataframe["close"].iat[-1]
 
+        # エントリー用の係数を使用
         if side == "long":
-            new_entryprice = close - atr * self.buy_atr_entry_point.value
+            new_entryprice = close - atr * self.entry_atr_coefficient.value
         elif side == "short":
-            new_entryprice = close + atr * self.short_atr_entry_point.value
+            new_entryprice = close + atr * self.entry_atr_coefficient.value
         else:
             new_entryprice = proposed_rate
 
