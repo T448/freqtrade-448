@@ -1,0 +1,34 @@
+{
+  "strategy_name": "AtrLimitStrategy",
+  "params": {
+    "trailing": {
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
+    },
+    "max_open_trades": {
+      "max_open_trades": 0
+    },
+    "buy": {
+      "buy_atr_entry_point": 0.615,
+      "exit_short_atr_entry_point": 0.341
+    },
+    "sell": {
+      "sell_atr_entry_point": 0.785,
+      "short_atr_entry_point": 0.25
+    },
+    "protection": {},
+    "roi": {
+      "0": 0.414,
+      "39": 0.121,
+      "81": 0.06,
+      "182": 0
+    },
+    "stoploss": {
+      "stoploss": -0.169
+    }
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2025-10-19 13:42:12.857278+00:00"
+}
