@@ -11,23 +11,23 @@
       "max_open_trades": 0
     },
     "buy": {
-      "atr_period": 13,
+      "atr_period": 11,
       "entry_atr_coefficient": 0.247
     },
     "sell": {
-      "exit_atr_coefficient": 0.486
+      "exit_atr_coefficient": 0.985
     },
     "protection": {},
     "roi": {
-      "0": 0.334,
-      "65": 0.117,
-      "118": 0.017,
-      "185": 0
+      "0": 0.325,
+      "80": 0.085,
+      "136": 0.024,
+      "476": 0
     },
     "stoploss": {
-      "stoploss": -0.279
+      "stoploss": -0.167
     }
   },
   "ft_stratparam_v": 1,
-  "export_time": "2025-10-19 14:19:47.801757+00:00"
+  "export_time": "2025-10-20 14:50:25.488305+00:00"
 }

@@ -81,6 +81,8 @@ class AtrLimitStrategy(IStrategy):
                 timeperiod=period,
             )
 
+        dataframe = self.freqai.start(dataframe, metadata, self)
+
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -294,3 +296,48 @@ class AtrLimitStrategy(IStrategy):
             return True
 
         return False
+
+    def feature_engineering_expand_all(
+        self, dataframe: DataFrame, period: int, metadata: dict, **kwargs
+    ) -> DataFrame:
+        # 特徴量の定義（% で始まるカラム名）
+        dataframe["%-ema-period"] = talib.EMA(dataframe["close"], timeperiod=period)
+        dataframe["%-rsi-period"] = talib.RSI(dataframe["close"], timeperiod=period)
+
+        # 追加の特徴量
+        dataframe["%-sma-period"] = talib.SMA(dataframe["close"], timeperiod=period)
+        dataframe["%-mfi-period"] = talib.MFI(
+            dataframe["high"],
+            dataframe["low"],
+            dataframe["close"],
+            dataframe["volume"],
+            timeperiod=period,
+        )
+        dataframe["%-adx-period"] = talib.ADX(
+            dataframe["high"], dataframe["low"], dataframe["close"], timeperiod=period
+        )
+        dataframe["%-roc-period"] = talib.ROC(dataframe["close"], timeperiod=period)
+
+        # ATR関連
+        dataframe["%-atr-period"] = talib.ATR(
+            dataframe["high"], dataframe["low"], dataframe["close"], timeperiod=period
+        )
+
+        # ボリューム関連
+        dataframe["%-relative_volume-period"] = (
+            dataframe["volume"] / dataframe["volume"].rolling(period).mean()
+        )
+
+        return dataframe
+
+    def set_freqai_targets(self, dataframe: DataFrame, metadata: dict, **kwargs) -> DataFrame:
+        # 目的変数の定義（& で始まるカラム名）
+        dataframe["&-s_close"] = (
+            dataframe["close"]
+            .shift(-self.freqai_info["feature_parameters"]["label_period_candles"])
+            .rolling(10)
+            .mean()
+            / dataframe["close"]
+            - 1
+        )
+        return dataframe
