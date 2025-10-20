@@ -1,0 +1,33 @@
+{
+  "strategy_name": "AtrLimitStrategy",
+  "params": {
+    "trailing": {
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
+    },
+    "max_open_trades": {
+      "max_open_trades": 0
+    },
+    "buy": {
+      "atr_period": 11,
+      "entry_atr_coefficient": 0.247
+    },
+    "sell": {
+      "exit_atr_coefficient": 0.985
+    },
+    "protection": {},
+    "roi": {
+      "0": 0.325,
+      "80": 0.085,
+      "136": 0.024,
+      "476": 0
+    },
+    "stoploss": {
+      "stoploss": -0.167
+    }
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2025-10-20 14:50:25.488305+00:00"
+}
