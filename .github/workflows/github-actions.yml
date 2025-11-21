@@ -1,0 +1,16 @@
+name: Main Workflow
+
+on:
+  push:
+    branches:
+      - "issue/**"
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+    secrets:
+      ACCESS_TOKEN_GITHUB_ACTIONS: ${{ secrets.ACCESS_TOKEN_GITHUB_ACTIONS }}
+  lint:
+    uses: ./.github/workflows/lint.yml
+    secrets:
+      ACCESS_TOKEN_GITHUB_ACTIONS: ${{ secrets.ACCESS_TOKEN_GITHUB_ACTIONS }}

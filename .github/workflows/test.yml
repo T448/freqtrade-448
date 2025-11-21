@@ -1,0 +1,58 @@
+name: unit-test
+
+on:
+  # push:
+  #   branches:
+  #     - "issue/**"
+  workflow_call:
+    secrets:
+      ACCESS_TOKEN_GITHUB_ACTIONS:
+        required: true
+
+jobs:
+  unit-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ["ubuntu-24.04"]
+        python-version: ["3.13"]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a4 # v6.7.0
+        with:
+          activate-environment: true
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          cache-dependency-glob: "requirements**.txt"
+          cache-suffix: "${{ matrix.python-version }}"
+
+      - name: Installation - *nix
+        run: |
+          uv pip install --upgrade wheel
+          uv pip install -r requirements-dev.txt
+          uv pip install -e ft_client/
+          uv pip install -e .
+
+      - name: Check for version alignment
+        run: |
+          python build_helpers/freqtrade_client_version_align.py
+
+      - name: Tests
+        if: (!(runner.os == 'Linux' && matrix.python-version == '3.13' && matrix.os == 'ubuntu-24.04'))
+        run: |
+          pytest --random-order
+
+      - name: Tests with Coveralls
+        if: (runner.os == 'Linux' && matrix.python-version == '3.13' && matrix.os == 'ubuntu-24.04')
+        run: |
+          pytest --random-order --cov=freqtrade --cov=freqtrade_client --cov-config=.coveragerc

@@ -56,7 +56,8 @@
                 "VisualStudioExptTeam.vscodeintellicode",
                 "anthropic.claude-code",
                 "shd101wyy.markdown-preview-enhanced",
-                "redhat.vscode-xml"
+                "redhat.vscode-xml",
+                "redhat.vscode-yaml"
             ]
         }
     },
